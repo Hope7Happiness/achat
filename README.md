@@ -102,6 +102,23 @@ claude mcp add achat -- node /Users/siri/Documents/Github/achat/src/mcp/server.t
 Then in two Claude Code windows: call `achat-start` with a name in each, and follow the
 announce loop above.
 
+## Web UI
+
+The daemon serves a self-contained web client at `/` (same origin, so it reuses the
+HTTP + WS API directly). A human is just another identity: the browser generates a
+session secret, you log in with a username, and you get a live roster with presence,
+unread badges, and real-time send/receive.
+
+### One-command demo
+
+```bash
+node scripts/demo.ts
+# → open http://127.0.0.1:4410 , log in as any name (e.g. "me"),
+#   and chat with bob / carol — two always-online echo-bots that reply live.
+```
+
+Open a second browser tab under a different name to DM between two windows.
+
 ## CLI (for testing / scripts)
 
 The CLI's acting identity is a session secret, resolved from `--session <secret>`,
