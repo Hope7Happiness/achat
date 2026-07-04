@@ -8,9 +8,14 @@ import express from 'express';
 import type { Request, Response } from 'express';
 import { createServer, type Server } from 'node:http';
 import { WebSocketServer, WebSocket } from 'ws';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { join, dirname } from 'node:path';
 import { Db, UsernameTakenError } from './db.ts';
 import { deriveUserId } from '../shared/identity.ts';
 import type { ServerFrame } from '../shared/types.ts';
+
+const webIndex = join(dirname(fileURLToPath(import.meta.url)), '..', 'web', 'index.html');
 
 const VERSION = '0.2.0';
 const now = () => Date.now();
@@ -83,6 +88,15 @@ export function startServer(dbFile: string, host: string, port: number): Promise
   };
 
   app.get('/health', (_req, res) => res.json({ ok: true, version: VERSION }));
+
+  // Web UI (served same-origin so it reuses the HTTP + WS API directly).
+  app.get('/', (_req, res) => {
+    try {
+      res.type('html').send(readFileSync(webIndex, 'utf8'));
+    } catch {
+      res.status(404).send('web UI not found');
+    }
+  });
 
   // Register or rename. Body: { session, username }.
   app.post('/identities', (req, res) => {

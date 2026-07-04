@@ -1,0 +1,260 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>achat</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #171a21; --panel2: #1e222b; --line: #2a2f3a;
+    --text: #e6e9ef; --muted: #8b93a3; --accent: #4f8cff; --accent2: #2f6fe0;
+    --online: #35c759; --badge: #ff453a;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg); color: var(--text);
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    display: flex; flex-direction: column; height: 100vh;
+  }
+  header {
+    display: flex; align-items: center; gap: 10px;
+    padding: 10px 16px; background: var(--panel); border-bottom: 1px solid var(--line);
+  }
+  header .logo { font-weight: 700; letter-spacing: .3px; }
+  header .me { margin-left: auto; color: var(--muted); }
+  header .me b { color: var(--text); }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); display: inline-block; }
+  .dot.on { background: var(--online); box-shadow: 0 0 6px var(--online); }
+
+  /* Login */
+  #login { margin: auto; background: var(--panel); border: 1px solid var(--line);
+    border-radius: 14px; padding: 28px; width: 320px; text-align: center; }
+  #login h1 { margin: 0 0 4px; font-size: 22px; }
+  #login p { color: var(--muted); margin: 0 0 18px; }
+  input, button { font: inherit; }
+  input[type=text] { width: 100%; padding: 10px 12px; border-radius: 9px;
+    border: 1px solid var(--line); background: var(--panel2); color: var(--text); outline: none; }
+  input[type=text]:focus { border-color: var(--accent); }
+  button { cursor: pointer; border: none; border-radius: 9px; background: var(--accent);
+    color: white; padding: 10px 14px; font-weight: 600; }
+  button:hover { background: var(--accent2); }
+  button:disabled { opacity: .5; cursor: default; }
+
+  /* App layout */
+  #app { flex: 1; display: none; min-height: 0; }
+  #app.show { display: flex; }
+  aside { width: 260px; background: var(--panel); border-right: 1px solid var(--line);
+    overflow-y: auto; flex-shrink: 0; }
+  .roster-title { padding: 12px 16px 6px; color: var(--muted); font-size: 12px;
+    text-transform: uppercase; letter-spacing: .5px; }
+  .contact { display: flex; align-items: center; gap: 10px; padding: 10px 16px; cursor: pointer;
+    border-left: 3px solid transparent; }
+  .contact:hover { background: var(--panel2); }
+  .contact.active { background: var(--panel2); border-left-color: var(--accent); }
+  .contact .name { flex: 1; }
+  .contact .badge { background: var(--badge); color: white; font-size: 11px; font-weight: 700;
+    min-width: 18px; height: 18px; border-radius: 9px; padding: 0 5px;
+    display: none; align-items: center; justify-content: center; }
+  .contact .badge.show { display: inline-flex; }
+
+  main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  .chat-head { padding: 12px 18px; border-bottom: 1px solid var(--line); background: var(--panel);
+    display: flex; align-items: center; gap: 10px; font-weight: 600; }
+  .messages { flex: 1; overflow-y: auto; padding: 18px; display: flex; flex-direction: column; gap: 8px; }
+  .empty { margin: auto; color: var(--muted); }
+  .msg { max-width: 68%; padding: 8px 12px; border-radius: 14px; word-wrap: break-word; white-space: pre-wrap; }
+  .msg .t { display: block; font-size: 10px; color: var(--muted); margin-top: 3px; }
+  .msg.them { align-self: flex-start; background: var(--panel2); border-bottom-left-radius: 4px; }
+  .msg.me { align-self: flex-end; background: var(--accent); border-bottom-right-radius: 4px; }
+  .msg.me .t { color: #d7e3ff; }
+  .composer { display: flex; gap: 10px; padding: 14px 18px; border-top: 1px solid var(--line); background: var(--panel); }
+  .composer input { flex: 1; }
+  .hint { color: var(--muted); padding: 18px; }
+</style>
+</head>
+<body>
+  <header>
+    <span class="logo">💬 achat</span>
+    <span id="conn" class="me"></span>
+    <span class="me" id="meLabel" style="display:none">signed in as <b id="meName"></b></span>
+  </header>
+
+  <div id="login">
+    <h1>achat</h1>
+    <p>Pick a username to come online</p>
+    <input id="username" type="text" placeholder="e.g. alice" autocomplete="off" />
+    <div style="height:12px"></div>
+    <button id="loginBtn">Come online</button>
+    <p id="loginErr" style="color:var(--badge); min-height:18px; margin-top:12px"></p>
+  </div>
+
+  <div id="app">
+    <aside>
+      <div class="roster-title">Contacts</div>
+      <div id="roster"></div>
+    </aside>
+    <main>
+      <div class="chat-head" id="chatHead"><span class="hint" style="padding:0;color:var(--muted)">Select a contact</span></div>
+      <div class="messages" id="messages"><div class="empty">No conversation open</div></div>
+      <div class="composer" id="composer" style="display:none">
+        <input id="msgInput" type="text" placeholder="Type a message…" autocomplete="off" />
+        <button id="sendBtn">Send</button>
+      </div>
+    </main>
+  </div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const state = { secret: null, userId: null, username: null, peer: null, unread: {}, roster: [], ws: null };
+
+// ---- session secret (browser-generated, persisted) ----
+function genSecret() {
+  const a = new Uint8Array(32); crypto.getRandomValues(a);
+  return btoa(String.fromCharCode(...a)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+state.secret = localStorage.getItem('achat_secret') || (() => {
+  const s = genSecret(); localStorage.setItem('achat_secret', s); return s;
+})();
+
+async function api(path, opts = {}) {
+  const headers = Object.assign({ 'content-type': 'application/json' }, opts.headers || {});
+  if (state.secret) headers['x-achat-session'] = state.secret;
+  const res = await fetch(path, Object.assign({}, opts, { headers }));
+  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || ('HTTP ' + res.status));
+  return res.json();
+}
+
+const fmtTime = (ms) => new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+// ---- login ----
+async function login() {
+  const username = $('username').value.trim();
+  if (!username) return;
+  $('loginBtn').disabled = true; $('loginErr').textContent = '';
+  try {
+    const out = await api('/identities', { method: 'POST', body: JSON.stringify({ session: state.secret, username }) });
+    state.userId = out.userId; state.username = out.username;
+    localStorage.setItem('achat_username', out.username);
+    $('login').style.display = 'none';
+    $('app').classList.add('show');
+    $('meLabel').style.display = ''; $('meName').textContent = out.username;
+    connectWS();
+    await refresh();
+    setInterval(refresh, 4000);
+  } catch (e) {
+    $('loginErr').textContent = e.message;
+    $('loginBtn').disabled = false;
+  }
+}
+
+// ---- data refresh (roster + unread) ----
+async function refresh() {
+  try {
+    const [{ identities }, unread] = await Promise.all([api('/identities'), api('/unread')]);
+    state.roster = identities.filter((i) => i.userId !== state.userId);
+    state.unread = {};
+    for (const s of unread.bySender) state.unread[s.username] = s.count;
+    renderRoster();
+  } catch (e) { /* transient */ }
+}
+
+function renderRoster() {
+  const el = $('roster');
+  el.innerHTML = '';
+  if (state.roster.length === 0) {
+    el.innerHTML = '<div class="hint">Nobody else online yet. Open another window or start an agent.</div>';
+    return;
+  }
+  for (const c of state.roster) {
+    const badge = state.unread[c.username] || 0;
+    const div = document.createElement('div');
+    div.className = 'contact' + (c.username === state.peer ? ' active' : '');
+    div.innerHTML = `<span class="dot ${c.online ? 'on' : ''}"></span>
+      <span class="name">${escapeHtml(c.username)}</span>
+      <span class="badge ${badge ? 'show' : ''}">${badge}</span>`;
+    div.onclick = () => openChat(c.username);
+    el.appendChild(div);
+  }
+}
+
+// ---- conversation ----
+async function openChat(username) {
+  state.peer = username;
+  $('chatHead').innerHTML = `<span class="dot ${isOnline(username) ? 'on' : ''}"></span> ${escapeHtml(username)}`;
+  $('composer').style.display = 'flex';
+  renderRoster();
+  const { messages } = await api('/messages?' + new URLSearchParams({ with: username, limit: '200' }));
+  renderMessages(messages);
+  // opening a conversation clears its unread (this human client marks read on open)
+  await api('/read', { method: 'POST', body: JSON.stringify({ with: username }) }).catch(() => {});
+  delete state.unread[username]; renderRoster();
+  $('msgInput').focus();
+}
+
+function renderMessages(messages) {
+  const el = $('messages');
+  el.innerHTML = '';
+  if (!messages.length) { el.innerHTML = '<div class="empty">No messages yet — say hi 👋</div>'; return; }
+  for (const m of messages) appendMessage(m, false);
+  el.scrollTop = el.scrollHeight;
+}
+
+function appendMessage(m, scroll = true) {
+  const el = $('messages');
+  const empty = el.querySelector('.empty'); if (empty) empty.remove();
+  const mine = m.fromId === state.userId;
+  const div = document.createElement('div');
+  div.className = 'msg ' + (mine ? 'me' : 'them');
+  div.innerHTML = `${escapeHtml(m.body)}<span class="t">${fmtTime(m.createdAt)}</span>`;
+  el.appendChild(div);
+  if (scroll) el.scrollTop = el.scrollHeight;
+}
+
+async function sendMessage() {
+  const input = $('msgInput');
+  const body = input.value.trim();
+  if (!body || !state.peer) return;
+  input.value = '';
+  try {
+    const { message } = await api('/messages', { method: 'POST', body: JSON.stringify({ to: state.peer, body }) });
+    appendMessage(message);
+  } catch (e) { alert('Send failed: ' + e.message); input.value = body; }
+}
+
+// ---- live WebSocket ----
+function connectWS() {
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  const ws = new WebSocket(`${proto}://${location.host}/ws?` + new URLSearchParams({ session: state.secret, since: '0' }));
+  state.ws = ws;
+  ws.onopen = () => { $('conn').textContent = '● live'; $('conn').style.color = 'var(--online)'; };
+  ws.onclose = () => { $('conn').textContent = '○ reconnecting…'; $('conn').style.color = 'var(--muted)'; setTimeout(connectWS, 1500); };
+  ws.onmessage = (ev) => {
+    let frame; try { frame = JSON.parse(ev.data); } catch { return; }
+    if (frame.type !== 'message') return;
+    const m = frame.message;
+    const peerName = m.fromId === state.userId ? m.toName : m.fromName;
+    if (peerName === state.peer && m.fromId !== state.userId) {
+      appendMessage(m);
+      api('/read', { method: 'POST', body: JSON.stringify({ with: peerName }) }).catch(() => {});
+    } else if (m.fromId !== state.userId) {
+      state.unread[m.fromName] = (state.unread[m.fromName] || 0) + 1;
+      renderRoster();
+    }
+  };
+}
+
+function isOnline(username) { const c = state.roster.find((r) => r.username === username); return c && c.online; }
+function escapeHtml(s) { return s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
+
+// ---- wire up ----
+$('loginBtn').onclick = login;
+$('username').addEventListener('keydown', (e) => { if (e.key === 'Enter') login(); });
+$('sendBtn').onclick = sendMessage;
+$('msgInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') sendMessage(); });
+const savedName = localStorage.getItem('achat_username');
+if (savedName) $('username').value = savedName;
+$('username').focus();
+</script>
+</body>
+</html>
