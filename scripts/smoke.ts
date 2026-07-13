@@ -33,6 +33,16 @@ const running = await startServer(dbPath(), '127.0.0.1', PORT);
 writeServerInfo({ host: '127.0.0.1', port: PORT });
 console.log(`daemon up on ${PORT}`);
 
+// Register straight over HTTP with a *foreign* machine secret, i.e. as if from another box.
+async function registerFromOtherMachine(session: string, username: string): Promise<void> {
+  const res = await fetch(`http://127.0.0.1:${PORT}/identities`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ session, username, machine: generateSecret() }),
+  });
+  if (!res.ok) throw new Error(((await res.json()) as { error: string }).error);
+}
+
 try {
   // 1. Register
   const a = await client.start(aliceSecret, 'alice');
@@ -99,19 +109,24 @@ try {
   const hist2 = await client.history(bobSecret, 'alice-prime', 50);
   check(hist2.some((m) => m.body === 'hey alice, live ping'), 'history follows the identity across the rename');
 
-  // 8. A username is NOT released by going offline. Otherwise, on a shared daemon, closing
-  //    your window would let anyone claim your name and receive mail addressed to you.
-  let stillOwned = false;
-  try {
-    await client.start(generateSecret(), 'carol'); // carol has no live socket here
-  } catch {
-    stillOwned = true;
-  }
-  check(stillOwned, 'an offline user keeps its username (no impersonation by takeover)');
+  // 8. Names are owned by the MACHINE. A new session on this machine reclaims the name its
+  //    own dead session left behind (one session == one user, so this happens constantly).
+  const carol2 = generateSecret();
+  const c2 = await client.start(carol2, 'carol'); // carol is offline; same machine (same ACHAT_HOME)
+  check(
+    c2.username === 'carol' && c2.userId === deriveUserId(carol2),
+    'a new session on the same machine reclaims its own offline username',
+  );
 
-  // 9. The rightful owner can still reclaim / re-register its own name.
-  const backAgain = await client.start(carolSecret, 'carol');
-  check(backAgain.userId === deriveUserId(carolSecret), 'the owner can re-register its own username');
+  // 9. ...but a session on a DIFFERENT machine never can — that would be impersonation,
+  //    since the username is how people address you.
+  let blocked = false;
+  try {
+    await registerFromOtherMachine(generateSecret(), 'carol');
+  } catch {
+    blocked = true;
+  }
+  check(blocked, 'another machine cannot claim an offline username');
 } finally {
   await running.close();
 }

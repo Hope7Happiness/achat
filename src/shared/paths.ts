@@ -9,6 +9,7 @@
 
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { randomBytes } from 'node:crypto';
 import { mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
 
 export const DEFAULT_PORT = 4360;
@@ -87,6 +88,24 @@ export function readSessionSecret(userId: string): string | null {
 
 export function writeSessionSecret(userId: string, secret: string): void {
   writeFileSync(sessionPath(userId), secret, { mode: 0o600 });
+}
+
+// ---- machine secret ----
+//
+// Long-lived, one per machine (~/.achat/machine.key). Usernames are owned by the machine
+// that claimed them, so that a *new* session here can reclaim the name its own dead session
+// left behind, while a session on any other machine never can. Presented like the session
+// secret — the server keeps only its hash.
+
+export function machineSecret(): string {
+  const path = join(achatHome(), 'machine.key');
+  if (existsSync(path)) {
+    const existing = readFileSync(path, 'utf8').trim();
+    if (existing) return existing;
+  }
+  const secret = randomBytes(32).toString('base64url');
+  writeFileSync(path, secret, { mode: 0o600 });
+  return secret;
 }
 
 // ---- per-identity watch cursor ----

@@ -12,6 +12,7 @@ import {
   baseUrl,
   wsUrl,
   remoteServer,
+  machineSecret,
   writeSessionSecret,
   DEFAULT_HOST,
   DEFAULT_PORT,
@@ -79,7 +80,7 @@ export async function start(session: string, username: string): Promise<StartRes
   await ensureServer();
   const out = await api<StartResponse>('/identities', null, {
     method: 'POST',
-    body: JSON.stringify({ session, username }),
+    body: JSON.stringify({ session, username, machine: machineSecret() }),
   });
   writeSessionSecret(out.userId, session);
   return out;

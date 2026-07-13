@@ -99,16 +99,20 @@ export function startServer(dbFile: string, host: string, port: number): Promise
     }
   });
 
-  // Register or rename. Body: { session, username }.
+  // Register or rename. Body: { session, username, machine? }.
+  // `machine` is the caller's machine secret; we keep only its hash, and it decides who may
+  // reclaim a username left behind by an offline session (see Db.register).
   app.post('/identities', (req, res) => {
     const secret = (req.body?.session ?? '').toString();
     const username = (req.body?.username ?? '').toString().trim();
+    const machine = (req.body?.machine ?? '').toString();
     if (!secret) return res.status(400).json({ error: 'session required' });
     if (!username) return res.status(400).json({ error: 'username required' });
     if (username.length > 64) return res.status(400).json({ error: 'username too long' });
     const userId = deriveUserId(secret);
+    const machineId = machine ? deriveUserId(machine) : '';
     try {
-      const out = db.register(userId, username, now());
+      const out = db.register(userId, username, machineId, now(), (id) => hub.isOnline(id));
       res.json(out);
     } catch (err) {
       if (err instanceof UsernameTakenError) return res.status(409).json({ error: err.message });

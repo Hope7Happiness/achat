@@ -29,6 +29,7 @@ export class Db {
       CREATE TABLE IF NOT EXISTS identities (
         user_id    TEXT PRIMARY KEY,
         username   TEXT UNIQUE,          -- nullable: a displaced identity keeps its id but loses its name
+        machine_id TEXT,                 -- hash of the machine secret this identity came from
         created_at INTEGER NOT NULL,
         last_seen  INTEGER
       );
@@ -54,6 +55,11 @@ export class Db {
       CREATE TABLE IF NOT EXISTS seq_counter (id INTEGER PRIMARY KEY CHECK (id = 0), value INTEGER NOT NULL);
       INSERT OR IGNORE INTO seq_counter (id, value) VALUES (0, 0);
     `);
+    // Added after the initial schema; older databases predate it.
+    const cols = this.db.prepare('PRAGMA table_info(identities)').all() as { name: string }[];
+    if (!cols.some((c) => c.name === 'machine_id')) {
+      this.db.exec('ALTER TABLE identities ADD COLUMN machine_id TEXT');
+    }
   }
 
   private nextSeq(): number {
@@ -61,27 +67,48 @@ export class Db {
     return (this.db.prepare('SELECT value FROM seq_counter WHERE id = 0').get() as { value: number }).value;
   }
 
-  // Register or rename an identity. A username belongs to the userId that claimed it, for
-  // good — being offline does NOT release it. (It used to: convenient on a single laptop,
-  // but on a shared daemon it means that when your window closes, anyone can claim your
-  // name and start receiving the messages people send "you". Names are the addressing
-  // primitive, so this is impersonation, not just a naming collision.)
-  register(userId: string, username: string, now: number): { userId: string; username: string } {
+  // Register or rename an identity.
+  //
+  // One session == one user, and sessions are short-lived, so a name has to outlive the
+  // identity that holds it — otherwise reopening a window would find "alice" permanently
+  // squatted by your own dead session, and the roster would fill with alice-2, alice-3.
+  // But a name is also how you are *addressed*, so letting just anyone take an idle name
+  // is impersonation: close your window, and someone else starts receiving your mail.
+  //
+  // So a name is owned by the **machine** that claimed it. A new session on that machine
+  // reclaims it freely once the previous holder is offline; a session on any other machine
+  // cannot, ever. The machine proves itself the same way a session does — it presents a
+  // secret and the server keeps only the hash.
+  register(
+    userId: string,
+    username: string,
+    machineId: string,
+    now: number,
+    isOnline: (userId: string) => boolean,
+  ): { userId: string; username: string } {
     this.db.exec('BEGIN');
     try {
       const holder = this.db
-        .prepare('SELECT user_id FROM identities WHERE username = ?')
-        .get(username) as { user_id: string } | undefined;
+        .prepare('SELECT user_id, machine_id FROM identities WHERE username = ?')
+        .get(username) as { user_id: string; machine_id: string | null } | undefined;
 
-      if (holder && holder.user_id !== userId) throw new UsernameTakenError(username);
+      if (holder && holder.user_id !== userId) {
+        const sameMachine = !!machineId && holder.machine_id === machineId;
+        if (!sameMachine || isOnline(holder.user_id)) throw new UsernameTakenError(username);
+        this.db.prepare('UPDATE identities SET username = NULL WHERE user_id = ?').run(holder.user_id);
+      }
 
       const exists = this.db.prepare('SELECT 1 FROM identities WHERE user_id = ?').get(userId);
       if (exists) {
-        this.db.prepare('UPDATE identities SET username = ? WHERE user_id = ?').run(username, userId);
+        this.db
+          .prepare('UPDATE identities SET username = ?, machine_id = ? WHERE user_id = ?')
+          .run(username, machineId, userId);
       } else {
         this.db
-          .prepare('INSERT INTO identities (user_id, username, created_at, last_seen) VALUES (?, ?, ?, ?)')
-          .run(userId, username, now, null);
+          .prepare(
+            'INSERT INTO identities (user_id, username, machine_id, created_at, last_seen) VALUES (?, ?, ?, ?, ?)',
+          )
+          .run(userId, username, machineId, now, null);
       }
       this.db.exec('COMMIT');
       return { userId, username };

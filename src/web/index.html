@@ -116,6 +116,11 @@ function genSecret() {
 state.secret = localStorage.getItem('achat_secret') || (() => {
   const s = genSecret(); localStorage.setItem('achat_secret', s); return s;
 })();
+// This browser is a "machine": it owns the usernames it claims, and only it can reclaim
+// one left behind by an offline session of its own. The server keeps only the hash.
+state.machine = localStorage.getItem('achat_machine') || (() => {
+  const s = genSecret(); localStorage.setItem('achat_machine', s); return s;
+})();
 
 async function api(path, opts = {}) {
   const headers = Object.assign({ 'content-type': 'application/json' }, opts.headers || {});
@@ -133,7 +138,7 @@ async function login() {
   if (!username) return;
   $('loginBtn').disabled = true; $('loginErr').textContent = '';
   try {
-    const out = await api('/identities', { method: 'POST', body: JSON.stringify({ session: state.secret, username }) });
+    const out = await api('/identities', { method: 'POST', body: JSON.stringify({ session: state.secret, username, machine: state.machine }) });
     state.userId = out.userId; state.username = out.username;
     localStorage.setItem('achat_username', out.username);
     $('login').style.display = 'none';
