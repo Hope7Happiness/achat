@@ -34,10 +34,69 @@ die()  { printf '\033[31m✗ %s\033[0m\n' "$*" >&2; exit 1; }
 # ---- prerequisites ----------------------------------------------------------
 
 command -v git >/dev/null || die "git is required"
-command -v node >/dev/null || die "node is required (>= 24 — achat runs TypeScript directly and uses node:sqlite)"
-NODE_MAJOR=$(node -p 'process.versions.node.split(".")[0]')
-[ "$NODE_MAJOR" -ge 24 ] || die "node >= 24 required, found $(node -v)"
+command -v curl >/dev/null || die "curl is required"
 command -v claude >/dev/null || die "the claude CLI is required (https://claude.com/claude-code)"
+
+# achat needs Node >= 24: it runs TypeScript with no build step and uses built-in node:sqlite.
+# Rather than ask you to upgrade the machine's Node (which other things depend on), keep a
+# private one under ~/.achat/node and refer to it by absolute path everywhere — the MCP
+# registration, the service unit, and the watcher command all pin it, so nothing depends on
+# what `node` happens to mean in a given shell.
+NODE_DIR="$HOME/.achat/node"
+NODE=""
+if command -v node >/dev/null && [ "$(node -p 'process.versions.node.split(".")[0]')" -ge 24 ]; then
+  NODE="$(command -v node)"
+elif [ -x "$NODE_DIR/bin/node" ] && [ "$("$NODE_DIR/bin/node" -p 'process.versions.node.split(".")[0]')" -ge 24 ]; then
+  NODE="$NODE_DIR/bin/node"
+  say "using the private Node in $NODE_DIR ($("$NODE" -v))"
+else
+  case "$(uname -s)" in
+    Darwin) OS=darwin ;;
+    Linux)  OS=linux ;;
+    *) die "unsupported platform $(uname -s)" ;;
+  esac
+  case "$(uname -m)" in
+    x86_64|amd64)  ARCH=x64 ;;
+    arm64|aarch64) ARCH=arm64 ;;
+    *) die "unsupported architecture $(uname -m)" ;;
+  esac
+  # index.json is newest-first. Prefer the newest LTS that is new enough — a long-lived
+  # daemon host is no place for a bleeding-edge Current release — and only fall back to the
+  # newest non-LTS if no LTS >= 24 exists yet.
+  INDEX=$(curl -fsSL https://nodejs.org/dist/index.json) || die "cannot reach nodejs.org"
+  # Fed by a here-string, not a pipe: returning early from a `while` on the read end of a
+  # pipe kills the writer with SIGPIPE, which under `set -o pipefail -e` takes the whole
+  # installer down silently.
+  ENTRIES=$(printf '%s' "$INDEX" | tr '}' '\n')
+  pick() { # $1 = 1 to require an LTS release
+    local line v major
+    while IFS= read -r line; do
+      case "$line" in *'"version":"v'*) ;; *) continue ;; esac
+      if [ "$1" = 1 ]; then
+        case "$line" in *'"lts":false'*) continue ;; esac
+      fi
+      v=${line#*\"version\":\"v}
+      v=${v%%\"*}
+      major=${v%%.*}
+      if [ "$major" -ge 24 ] 2>/dev/null; then printf 'v%s' "$v"; return 0; fi
+    done <<< "$ENTRIES"
+    return 1
+  }
+  VER=$(pick 1 || true)
+  [ -n "$VER" ] || VER=$(pick 0 || true)
+  [ -n "$VER" ] || die "could not find a Node >= 24 release on nodejs.org"
+  say "system node is $( (node -v 2>/dev/null) || echo missing) — installing a private Node $VER into $NODE_DIR"
+  rm -rf "$NODE_DIR" && mkdir -p "$NODE_DIR"
+  curl -fsSL "https://nodejs.org/dist/$VER/node-$VER-$OS-$ARCH.tar.gz" \
+    | tar -xz -C "$NODE_DIR" --strip-components=1 \
+    || die "failed to download Node $VER for $OS-$ARCH"
+  NODE="$NODE_DIR/bin/node"
+  [ -x "$NODE" ] || die "Node install failed"
+fi
+NPM_CLI="$(dirname "$NODE")/../lib/node_modules/npm/bin/npm-cli.js"
+run_npm() {
+  if [ -f "$NPM_CLI" ]; then "$NODE" "$NPM_CLI" "$@"; else npm "$@"; fi
+}
 
 TS=""
 for c in tailscale /Applications/Tailscale.app/Contents/MacOS/Tailscale; do
@@ -55,13 +114,13 @@ else
   git clone --quiet --depth 1 "$REPO" "$APP"
 fi
 say "installing dependencies"
-(cd "$APP" && npm install --silent --omit=dev >/dev/null)
+(cd "$APP" && run_npm install --silent --omit=dev >/dev/null)
 
 # ---- work out the server URL ------------------------------------------------
 
 if [ "$MODE" = host ]; then
   [ -n "$TS" ] || die "tailscale not found — install it, or host the daemon on a machine that has it"
-  DNS=$("$TS" status --json | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s);const n=j.Self&&j.Self.DNSName;if(!n){process.exit(1)}process.stdout.write(n.replace(/\.$/,""))})') \
+  DNS=$("$TS" status --json | "$NODE" -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s);const n=j.Self&&j.Self.DNSName;if(!n){process.exit(1)}process.stdout.write(n.replace(/\.$/,""))})') \
     || die "tailscale is installed but not logged in — run: tailscale up"
   BIND=$("$TS" ip -4 | head -1)
   SERVER="http://$DNS:$PORT"
@@ -87,7 +146,7 @@ if [ "$MODE" = host ]; then
 <plist version="1.0"><dict>
   <key>Label</key><string>com.achat.daemon</string>
   <key>ProgramArguments</key><array>
-    <string>$(command -v node)</string>
+    <string>$NODE</string>
     <string>$APP/src/cli/achat.ts</string>
     <string>serve</string>
     <string>--host</string><string>$BIND</string>
@@ -111,7 +170,7 @@ Description=achat daemon
 After=network-online.target
 
 [Service]
-ExecStart=$(command -v node) $APP/src/cli/achat.ts serve --host $BIND --port $PORT
+ExecStart=$NODE $APP/src/cli/achat.ts serve --host $BIND --port $PORT
 Restart=always
 
 [Install]
@@ -119,6 +178,10 @@ WantedBy=default.target
 UNIT_EOF
     systemctl --user daemon-reload
     systemctl --user enable --now achat.service
+    # Without lingering, a --user service dies when you log out of SSH — which is exactly
+    # what an always-on host must not do.
+    loginctl enable-linger "$USER" >/dev/null 2>&1 \
+      || say "note: could not enable lingering; run 'sudo loginctl enable-linger $USER' so the daemon survives logout"
     say "daemon installed as a systemd user service"
   fi
 
@@ -133,7 +196,7 @@ fi
 
 say "registering the achat MCP server with Claude Code (user scope)"
 claude mcp remove achat --scope user >/dev/null 2>&1 || true
-claude mcp add achat --scope user --env "ACHAT_SERVER=$SERVER" -- node "$APP/src/mcp/server.ts"
+claude mcp add achat --scope user --env "ACHAT_SERVER=$SERVER" -- "$NODE" "$APP/src/mcp/server.ts"
 
 # ---- teach every window the announce loop -----------------------------------
 
@@ -146,7 +209,7 @@ mkdir -p "$(dirname "$MEM")"
 BEGIN="<!-- achat:begin -->"
 END="<!-- achat:end -->"
 if [ -f "$MEM" ] && grep -qF "$BEGIN" "$MEM"; then
-  node -e '
+  "$NODE" -e '
     const fs=require("fs");
     const [file,begin,end,body]=process.argv.slice(1);
     const cur=fs.readFileSync(file,"utf8");

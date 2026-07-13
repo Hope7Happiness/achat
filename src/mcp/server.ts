@@ -78,7 +78,10 @@ server.registerTool(
     const watchHint =
       `\n\nTo receive messages while you work, run this in a BACKGROUND shell ` +
       `(it blocks until a message arrives, prints it, then exits — relaunch it each time it returns):\n` +
-      `  ${envPrefix ? envPrefix + ' ' : ''}node ${watchCmd} watch --user ${USER_ID}`;
+      // process.execPath, not "node": the machine's `node` on PATH may be an older one that
+      // cannot run this code at all (achat needs >= 24), and the installer may have put a
+      // private Node under ~/.achat/node precisely because of that.
+      `  ${envPrefix ? envPrefix + ' ' : ''}${process.execPath} ${watchCmd} watch --user ${USER_ID}`;
 
     return {
       content: [
