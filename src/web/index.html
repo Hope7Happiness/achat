@@ -225,7 +225,9 @@ async function sendMessage() {
 // ---- live WebSocket ----
 function connectWS() {
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-  const ws = new WebSocket(`${proto}://${location.host}/ws?` + new URLSearchParams({ session: state.secret, since: '0' }));
+  // Secret rides in the subprotocol (the only header a browser WebSocket can set), never
+  // in the URL — see src/shared/wire.ts.
+  const ws = new WebSocket(`${proto}://${location.host}/ws?since=0`, ['achat.v1', 'achat.session.' + state.secret]);
   state.ws = ws;
   ws.onopen = () => { $('conn').textContent = '● live'; $('conn').style.color = 'var(--online)'; };
   ws.onclose = () => { $('conn').textContent = '○ reconnecting…'; $('conn').style.color = 'var(--muted)'; setTimeout(connectWS, 1500); };

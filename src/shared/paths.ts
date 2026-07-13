@@ -52,12 +52,23 @@ export function writeServerInfo(info: ServerInfo): void {
   writeFileSync(serverInfoPath(), JSON.stringify(info, null, 2));
 }
 
+// A remote daemon, e.g. ACHAT_SERVER=http://laptop.tailnet.ts.net:4360 (or https://…).
+// When set, this machine is a pure client: it must never fall back to a local daemon,
+// because a silently-spawned local one would be an empty parallel universe.
+export function remoteServer(): string | null {
+  const raw = process.env.ACHAT_SERVER?.trim();
+  if (!raw) return null;
+  return raw.replace(/\/+$/, '');
+}
+
 export function baseUrl(info = readServerInfo()): string {
-  return `http://${info.host}:${info.port}`;
+  return remoteServer() ?? `http://${info.host}:${info.port}`;
 }
 
 export function wsUrl(info = readServerInfo()): string {
-  return `ws://${info.host}:${info.port}/ws`;
+  const remote = remoteServer();
+  if (!remote) return `ws://${info.host}:${info.port}/ws`;
+  return `${remote.replace(/^http/, 'ws')}/ws`;
 }
 
 // ---- per-identity session secret (so the watcher process can auth as this userId) ----

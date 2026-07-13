@@ -11,10 +11,12 @@ import {
   writeServerInfo,
   baseUrl,
   wsUrl,
+  remoteServer,
   writeSessionSecret,
   DEFAULT_HOST,
   DEFAULT_PORT,
 } from '../shared/paths.ts';
+import { WS_PROTOCOL, sessionProtocol } from '../shared/wire.ts';
 import { deriveUserId } from '../shared/identity.ts';
 import type { Identity, Message, SendResponse, StartResponse, ServerFrame } from '../shared/types.ts';
 
@@ -32,6 +34,13 @@ async function health(base: string): Promise<boolean> {
 
 // Ensure a daemon is reachable; spawn a detached one and wait for it if not.
 export async function ensureServer(): Promise<void> {
+  const remote = remoteServer();
+  if (remote) {
+    // Pure-client mode: never auto-spawn. A local daemon here would be a separate,
+    // empty world that silently swallows your messages.
+    if (await health(remote)) return;
+    throw new Error(`achat daemon unreachable at ${remote} (ACHAT_SERVER). Is it running, and is this machine on the same network?`);
+  }
   if (await health(baseUrl(readServerInfo()))) return;
 
   const host = process.env.ACHAT_HOST ?? DEFAULT_HOST;
@@ -130,8 +139,9 @@ export function watch(
   onMessage: (m: Message) => void,
   onOpen?: () => void,
 ): { promise: Promise<void>; close: () => void } {
-  const q = new URLSearchParams({ session, since: String(since) });
-  const ws = new WebSocket(`${wsUrl()}?${q}`);
+  const q = new URLSearchParams({ since: String(since) });
+  // The secret rides in the subprotocol, never in the URL — see shared/wire.ts.
+  const ws = new WebSocket(`${wsUrl()}?${q}`, [WS_PROTOCOL, sessionProtocol(session)]);
   const promise = new Promise<void>((resolve, reject) => {
     ws.on('open', () => onOpen?.());
     ws.on('message', (data) => {

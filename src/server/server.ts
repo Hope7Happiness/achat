@@ -13,6 +13,7 @@ import { fileURLToPath } from 'node:url';
 import { join, dirname } from 'node:path';
 import { Db, UsernameTakenError } from './db.ts';
 import { deriveUserId } from '../shared/identity.ts';
+import { WS_PROTOCOL, secretFromProtocols } from '../shared/wire.ts';
 import type { ServerFrame } from '../shared/types.ts';
 
 const webIndex = join(dirname(fileURLToPath(import.meta.url)), '..', 'web', 'index.html');
@@ -68,8 +69,8 @@ export function startServer(dbFile: string, host: string, port: number): Promise
   const app = express();
   app.use(express.json({ limit: '256kb' }));
 
-  const sessionOf = (req: Request): string =>
-    (req.header('x-achat-session') ?? (req.query.session as string | undefined) ?? '').toString();
+  // Header only — a secret in the query string would be logged by every proxy in the path.
+  const sessionOf = (req: Request): string => (req.header('x-achat-session') ?? '').toString();
 
   // Resolve the authenticated caller. Returns { userId, username } or writes 401/403 and returns null.
   const caller = (req: Request, res: Response): { userId: string; username: string } | null => {
@@ -107,7 +108,7 @@ export function startServer(dbFile: string, host: string, port: number): Promise
     if (username.length > 64) return res.status(400).json({ error: 'username too long' });
     const userId = deriveUserId(secret);
     try {
-      const out = db.register(userId, username, now(), (id) => hub.isOnline(id));
+      const out = db.register(userId, username, now());
       res.json(out);
     } catch (err) {
       if (err instanceof UsernameTakenError) return res.status(409).json({ error: err.message });
@@ -181,11 +182,18 @@ export function startServer(dbFile: string, host: string, port: number): Promise
   });
 
   const httpServer = createServer(app);
-  const wss = new WebSocketServer({ server: httpServer, path: '/ws' });
+  const wss = new WebSocketServer({
+    server: httpServer,
+    path: '/ws',
+    // Clients offer [achat.v1, achat.session.<secret>]; we accept the plain one back.
+    handleProtocols: () => WS_PROTOCOL,
+  });
 
   wss.on('connection', (ws, req) => {
     const url = new URL(req.url ?? '', 'http://localhost');
-    const secret = url.searchParams.get('session') ?? '';
+    // The secret arrives as a subprotocol, not a query param: query strings land in access
+    // logs, which is a credential leak once the daemon is reachable off-localhost.
+    const secret = secretFromProtocols(req.headers['sec-websocket-protocol']);
     const since = Number(url.searchParams.get('since') ?? 0) || 0;
     const userId = secret ? deriveUserId(secret) : '';
     const username = userId ? db.usernameOf(userId) : null;

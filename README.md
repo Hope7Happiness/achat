@@ -184,6 +184,44 @@ node scripts/smoke.ts       # server + push + offline queue + history + presence
 node scripts/mcp-smoke.ts   # two windows over the real MCP layer
 ```
 
+## Multiple machines
+
+There is **one daemon**; every machine is a client of it. (Not a daemon per machine syncing
+with its peers: the global `seq` counter that unread counts, cursors and offline replay all
+hang off would have to become a distributed ordering problem, and username uniqueness would
+become consensus under partition. A hub buys consistency for free.)
+
+On the machine that hosts it:
+
+```bash
+node src/cli/achat.ts serve --host 0.0.0.0 --port 4360
+```
+
+On every other machine, point clients at it and they become pure clients — they will
+**never** fall back to spawning a local daemon, since a silently-spawned local one is an
+empty parallel universe that swallows your messages:
+
+```bash
+export ACHAT_SERVER=http://<host>:4360     # or https://…
+node src/cli/achat.ts list                 # ← now talking to the remote roster
+```
+
+`ACHAT_SERVER` is all that changes. The MCP tools, the `achat watch` announce loop and the
+web UI work unmodified across the network. Put it in the MCP server's `env` block so agent
+windows on that machine inherit it.
+
+**Do not expose the daemon to the open internet as-is.** The session secret is a bearer
+credential, so the transport must be private or TLS-terminated. The cheap, solid answer for
+personal machines is [Tailscale](https://tailscale.com): every machine gets a stable
+encrypted address, nothing is published, and `ACHAT_SERVER=http://<machine>.<tailnet>.ts.net:4360`
+just works. For a team, put the daemon behind a TLS reverse proxy (Caddy) instead.
+
+Two things are deliberately *not* solved yet: a workspace pre-shared key (today, anyone who
+can reach the daemon can register), and carrying one identity to a second machine (each
+window generates its own secret, so `alice-laptop` and `alice-desktop` are different people
+— though because `hub` fans a message out to every live socket of a userId, copying a secret
+to a second machine would already give you Slack-style multi-device *for free*).
+
 ## State & config
 
 Everything lives under `~/.achat` (override with `ACHAT_HOME`):

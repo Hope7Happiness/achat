@@ -1,6 +1,6 @@
 // End-to-end smoke test. Runs the daemon in-process on a temp home, then exercises:
-// register, live push, offline queue, unread-count semantics, read-clears-on-history,
-// history, presence, username uniqueness, rename-keeps-history, offline-username-takeover.
+// register, live push, offline queue, unread-count semantics, non-destructive history,
+// explicit mark-read, presence, username ownership, and rename-keeps-history.
 // Run: node scripts/smoke.ts
 
 import { mkdtempSync } from 'node:fs';
@@ -99,10 +99,19 @@ try {
   const hist2 = await client.history(bobSecret, 'alice-prime', 50);
   check(hist2.some((m) => m.body === 'hey alice, live ping'), 'history follows the identity across the rename');
 
-  // 8. Offline username takeover
-  const carol2 = generateSecret();
-  const c2 = await client.start(carol2, 'carol');
-  check(c2.username === 'carol' && c2.userId === deriveUserId(carol2), 'offline username can be taken over');
+  // 8. A username is NOT released by going offline. Otherwise, on a shared daemon, closing
+  //    your window would let anyone claim your name and receive mail addressed to you.
+  let stillOwned = false;
+  try {
+    await client.start(generateSecret(), 'carol'); // carol has no live socket here
+  } catch {
+    stillOwned = true;
+  }
+  check(stillOwned, 'an offline user keeps its username (no impersonation by takeover)');
+
+  // 9. The rightful owner can still reclaim / re-register its own name.
+  const backAgain = await client.start(carolSecret, 'carol');
+  check(backAgain.userId === deriveUserId(carolSecret), 'the owner can re-register its own username');
 } finally {
   await running.close();
 }

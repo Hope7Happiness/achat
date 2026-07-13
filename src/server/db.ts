@@ -61,25 +61,19 @@ export class Db {
     return (this.db.prepare('SELECT value FROM seq_counter WHERE id = 0').get() as { value: number }).value;
   }
 
-  // Register or rename an identity. Enforces username uniqueness with offline-takeover.
-  // `isOnline` decides whether a current holder blocks the takeover.
-  register(
-    userId: string,
-    username: string,
-    now: number,
-    isOnline: (userId: string) => boolean,
-  ): { userId: string; username: string } {
+  // Register or rename an identity. A username belongs to the userId that claimed it, for
+  // good — being offline does NOT release it. (It used to: convenient on a single laptop,
+  // but on a shared daemon it means that when your window closes, anyone can claim your
+  // name and start receiving the messages people send "you". Names are the addressing
+  // primitive, so this is impersonation, not just a naming collision.)
+  register(userId: string, username: string, now: number): { userId: string; username: string } {
     this.db.exec('BEGIN');
     try {
       const holder = this.db
         .prepare('SELECT user_id FROM identities WHERE username = ?')
         .get(username) as { user_id: string } | undefined;
 
-      if (holder && holder.user_id !== userId) {
-        if (isOnline(holder.user_id)) throw new UsernameTakenError(username);
-        // take the name from the offline holder
-        this.db.prepare('UPDATE identities SET username = NULL WHERE user_id = ?').run(holder.user_id);
-      }
+      if (holder && holder.user_id !== userId) throw new UsernameTakenError(username);
 
       const exists = this.db.prepare('SELECT 1 FROM identities WHERE user_id = ?').get(userId);
       if (exists) {
