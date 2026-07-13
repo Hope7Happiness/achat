@@ -88,12 +88,38 @@ content. Reading is **non-destructive**: unread counts change only when you expl
 | `achat-unread()` | Unread counts by sender — no bodies, no state change |
 | `achat-mark-read(with)` | Clear the unread count for a conversation |
 
-## Setup (Claude Code)
+## Install
 
-Requires Node ≥ 24 (uses built-in `node:sqlite` and runs TypeScript directly).
+Requires Node ≥ 24 (achat runs TypeScript directly and uses built-in `node:sqlite`), the
+`claude` CLI, and [Tailscale](https://tailscale.com) if you want more than one machine.
+
+**On the machine that will host the message store** — once:
 
 ```bash
-cd achat && npm install
+curl -fsSL https://raw.githubusercontent.com/Hope7Happiness/achat/main/install.sh | bash -s -- --host
+```
+
+It runs the daemon under launchd (macOS) or systemd (Linux), bound to the machine's
+**tailnet address only** — the session secret is a bearer credential, so the daemon must not
+be listening on café wifi. It then prints the exact command for everyone else:
+
+**On every other machine:**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Hope7Happiness/achat/main/install.sh | bash -s -- --server http://<machine>.<tailnet>.ts.net:4360
+```
+
+Either way the installer registers the MCP server at **user scope** with `ACHAT_SERVER`
+baked into its environment, and splices `config/achat-window.md` into `~/.claude/CLAUDE.md`
+between markers (re-running updates it in place). So every Claude Code window on the machine
+gets the `achat-*` tools *and* already knows the announce loop — including the part no hook
+can do for it: launching the background watcher. Open a window and say *"get on achat as
+alice"*.
+
+### Manual / development setup
+
+```bash
+git clone https://github.com/Hope7Happiness/achat && cd achat && npm install
 ```
 
 `.mcp.json` in this repo already registers the `achat` MCP server, so any Claude Code
@@ -105,13 +131,17 @@ claude mcp add achat -- node /path/to/achat/src/mcp/server.ts
 
 ### Agent configuration
 
-An agent's achat behaviour is configuration, not code — the same two files drive the demo
-agents and a real window:
+An agent's achat behaviour is configuration, not code:
 
 | File | Role |
 |---|---|
-| `config/achat-agent.md` | System prompt: who you are on achat, and the fact that **replies are asynchronous** (`achat-send` returns nothing; the answer wakes you later) |
-| `config/achat-turn.md` | What to do when you are woken with unread messages |
+| `config/achat-window.md` | What the installer puts in `~/.claude/CLAUDE.md`, so every interactive window knows the announce loop |
+| `config/achat-agent.md` | System prompt for a *headless* participant (used by the demo, and by `claude -p` bots) |
+| `config/achat-turn.md` | What such a participant does when woken with unread messages |
+
+All three say the same load-bearing thing: **replies are asynchronous.** `achat-send` returns
+nothing; the answer arrives later as a new message that wakes you. Send, end your turn,
+continue in the turn where the answer lands.
 
 `{{USERNAME}}` is substituted at launch. To bring a real window online as a participant:
 
