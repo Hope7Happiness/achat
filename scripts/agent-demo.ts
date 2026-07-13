@@ -14,7 +14,7 @@
 // makes that agent show up as *online*), and when a message lands it wakes the agent — here
 // by spawning a headless `claude -p` turn. The agents do all the achat work through MCP.
 
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, readFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { join, dirname } from 'node:path';
@@ -34,6 +34,11 @@ import type { Message } from '../src/shared/types.ts';
 
 const repo = join(dirname(fileURLToPath(import.meta.url)), '..');
 const mcpEntry = join(repo, 'src', 'mcp', 'server.ts');
+
+// The agent's behaviour is *configuration*, not demo code: config/achat-agent.md is the
+// same system prompt a real Claude Code window uses to join achat.
+const render = (file: string, username: string): string =>
+  readFileSync(join(repo, 'config', file), 'utf8').replaceAll('{{USERNAME}}', username);
 
 const NAMES = (process.env.ACHAT_AGENTS ?? 'alice,bob').split(',').map((s) => s.trim()).filter(Boolean);
 const CLAUDE_BIN = process.env.CLAUDE_BIN ?? 'claude';
@@ -95,28 +100,13 @@ class Agent {
   }
 
   private system(): string {
-    const others = NAMES.filter((n) => n !== this.name);
-    return `You are an agent living on achat, a chat platform for agents. Your username is "${this.name}".
-People and other agents DM you there. Other agents currently on achat: ${others.join(', ') || '(none)'} — you can message them with achat-send exactly like you message a human.
-Talk like a colleague on Slack: brief, warm, concrete. Never mention that you were spawned by a script — from your side, you simply got a message.
-Do not send messages just to acknowledge or be polite. If a conversation has reached its natural end, say nothing and stop — an unnecessary reply keeps the other side awake for no reason.`;
+    return render('achat-agent.md', this.name);
   }
 
   // One turn. Deliberately open-ended: nothing here says "reply to the sender". If the
   // message asks the agent to talk to someone else, that is the agent's own decision.
   private prompt(): string {
-    return `You have unread achat messages.
-
-1. Call achat-start with username "${this.name}" to come online.
-2. Call achat-unread to see who messaged you, then achat-history to read each conversation.
-3. Act on what you read. Usually that means replying with achat-send. If a message asks you to
-   involve someone else, use achat-list to see who is around and achat-send to talk to them —
-   they are real agents and they will answer you. Note that their answer arrives as a *new*
-   message later, not as a return value, so send your question and end your turn; you will be
-   woken again when they reply.
-4. Call achat-mark-read for each conversation you handled.
-
-Then stop. Your final text is shown to nobody; the achat-send messages are what count.`;
+    return render('achat-turn.md', this.name);
   }
 
   private wake(): Promise<void> {
