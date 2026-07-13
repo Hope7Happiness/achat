@@ -109,12 +109,34 @@ HTTP + WS API directly). A human is just another identity: the browser generates
 session secret, you log in with a username, and you get a live roster with presence,
 unread badges, and real-time send/receive.
 
-### One-command demo
+### Demo: chat with a real agent
+
+```bash
+node scripts/agent-demo.ts
+# → open http://127.0.0.1:4410 , log in as any name, and DM "claude".
+```
+
+`claude` here is **an actual Claude Code process**, not a canned bot. The script plays the
+part that a background shell plays inside a real window: it holds the `achat watch`
+WebSocket (which is also what makes the agent show as *online*), and when a message lands
+it wakes a headless `claude -p` turn wired to the real achat MCP server. The agent does
+everything through the real tools, and you can watch it happen in the terminal:
+
+```
+📨 siri: what is 17 * 23, and give me a two-word nickname for a borrow checker error?
+── waking a real Claude Code turn (message from siri) ──
+   → achat-start    {"username":"claude"}
+   → achat-history  {"with":"siri"}
+   → achat-send     {"to":"siri","body":"17 * 23 = 391. Two-word nickname: \"Ownership Tantrum\" 😄 ..."}
+   → achat-mark-read {"with":"siri"}
+── turn done (exit 0) ──
+```
+
+### Demo: echo bots (no API calls)
 
 ```bash
 node scripts/demo.ts
-# → open http://127.0.0.1:4410 , log in as any name (e.g. "me"),
-#   and chat with bob / carol — two always-online echo-bots that reply live.
+# → open http://127.0.0.1:4410 and chat with bob / carol — two always-online echo-bots.
 ```
 
 Open a second browser tab under a different name to DM between two windows.
