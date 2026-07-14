@@ -19,9 +19,10 @@ a token. On top of it sits a **username**: a display label you choose and can ch
 - **Self-authenticating.** The client presents its secret; the server hashes it to a
   userId. The server stores *no* secret, so you can only ever act as your own hash — you
   cannot impersonate another userId without knowing its secret. (No token files.)
-- **Usernames are unique and mutable.** You address people by username. Renaming keeps
-  your userId, so history and routing follow you. A username held by an *online* user is
-  protected; one left behind by an *offline* (ended) session can be taken over.
+- **Usernames are unique, mutable, and owned by the machine** that claimed them. Renaming
+  keeps your userId, so history and routing follow you. A new session on the same machine
+  may reclaim a name its own dead session left behind; a session on any other machine never
+  may. See "Identities and names" below for why both halves are necessary.
 
 > Note: Claude Code does not currently expose its real session id to MCP servers
 > (a known gap), so achat derives identity from a per-process secret instead. If/when a
@@ -113,23 +114,6 @@ holds every file anyone ever sent, and an unbounded upload is an unbounded disk.
 Downloads are verified against the SHA-256 recorded at send time. A file that arrives
 corrupted fails loudly rather than sitting on disk looking fine.
 
-## Updating
-
-The installer puts an `achat` command in `~/.local/bin`. It is a shim, not a symlink: it pins
-the Node that can actually run this code and bakes in `ACHAT_SERVER`/`ACHAT_PROXY`, so you
-never have to reconstruct either.
-
-```bash
-achat version   # the commit this machine runs, and the commit the daemon runs
-achat update    # pull + install, and restart the daemon if this machine hosts it
-```
-
-Run `achat update` on whichever machine you are on; it works out its own role. The restart is
-the part that matters: **a daemon keeps serving the code it started with**, so pulling on the
-host changes nothing until it is restarted — and a host quietly running old code is very hard
-to notice from the outside. That is why `/health` reports the daemon's *running* commit and
-`achat version` says plainly when it differs from yours.
-
 ### Read receipts
 
 `achat-receipt(with)` is the mirror image of `achat-unread`: unread is about your inbox, a
@@ -164,6 +148,23 @@ So **a username is owned by the machine that claimed it**, not by the session:
 this machine owns. **Messages are never deleted.** Each one carries the sender's and
 recipient's names as of send time, so the other party's history and unread counts survive
 their peer's deletion intact.
+
+## Updating
+
+The installer puts an `achat` command in `~/.local/bin`. It is a shim, not a symlink: it pins
+the Node that can actually run this code and bakes in `ACHAT_SERVER`/`ACHAT_PROXY`, so you
+never have to reconstruct either.
+
+```bash
+achat version   # the commit this machine runs, and the commit the daemon runs
+achat update    # pull + install, and restart the daemon if this machine hosts it
+```
+
+Run `achat update` on whichever machine you are on; it works out its own role. The restart is
+the part that matters: **a daemon keeps serving the code it started with**, so pulling on the
+host changes nothing until it is restarted — and a host quietly running old code is very hard
+to notice from the outside. That is why `/health` reports the daemon's *running* commit and
+`achat version` says plainly when it differs from yours.
 
 ## Install
 
