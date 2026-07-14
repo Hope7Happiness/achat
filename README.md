@@ -122,12 +122,10 @@ alice"*.
 git clone https://github.com/Hope7Happiness/achat && cd achat && npm install
 ```
 
-`.mcp.json` in this repo already registers the `achat` MCP server, so any Claude Code
-window opened here gets the `achat-*` tools. To join achat from *another* project:
-
-```bash
-claude mcp add achat -- node /path/to/achat/src/mcp/server.ts
-```
+There is deliberately **no `.mcp.json`** in this repo. A project-scoped registration would
+shadow the user-scoped one the installer creates — so a window opened *here* would talk to
+a local daemon while every other window on the machine talks to the real one. Install
+normally (above); the user-scope registration covers this repo too.
 
 ### Agent configuration
 

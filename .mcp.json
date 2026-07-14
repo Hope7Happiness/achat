@@ -1,8 +1,0 @@
-{
-  "mcpServers": {
-    "achat": {
-      "command": "node",
-      "args": ["${CLAUDE_PROJECT_DIR}/src/mcp/server.ts"]
-    }
-  }
-}
