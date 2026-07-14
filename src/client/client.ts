@@ -174,9 +174,26 @@ export function watch(
   const q = new URLSearchParams({ since: String(since) });
   // The secret rides in the subprotocol, never in the URL — see shared/wire.ts.
   const ws = new WebSocket(`${wsUrl()}?${q}`, [WS_PROTOCOL, sessionProtocol(session)]);
+
+  // Notice a server that vanished without closing the connection (host powered off, network
+  // partition). The socket would otherwise stay OPEN for as long as TCP keeps retrying, and
+  // a watcher sitting on it is deaf without knowing it — so it would never reconnect either.
+  // The server pings every 30s; missing several of those means the far end is gone.
+  const DEAD_AFTER_MS = Number(process.env.ACHAT_DEAD_MS ?? 90_000);
+  let deadTimer: ReturnType<typeof setTimeout> | null = null;
+  const bump = (): void => {
+    if (deadTimer) clearTimeout(deadTimer);
+    deadTimer = setTimeout(() => ws.terminate(), DEAD_AFTER_MS);
+  };
+
   const promise = new Promise<void>((resolve, reject) => {
-    ws.on('open', () => onOpen?.());
+    ws.on('open', () => {
+      bump();
+      onOpen?.();
+    });
+    ws.on('ping', bump);
     ws.on('message', (data) => {
+      bump();
       let frame: ServerFrame;
       try {
         frame = JSON.parse(data.toString()) as ServerFrame;
@@ -186,7 +203,10 @@ export function watch(
       if (frame.type === 'message') onMessage(frame.message);
       else if (frame.type === 'error') reject(new Error(frame.error));
     });
-    ws.on('close', () => resolve());
+    ws.on('close', () => {
+      if (deadTimer) clearTimeout(deadTimer);
+      resolve();
+    });
     ws.on('error', (err) => reject(err));
   });
   return { promise, close: () => ws.close() };

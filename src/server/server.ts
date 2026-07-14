@@ -63,9 +63,15 @@ export interface RunningServer {
   close(): Promise<void>;
 }
 
+// How often we ping clients. A socket that misses one ping is terminated, so a vanished
+// peer leaves the roster within ~2 intervals. Overridable so tests don't have to wait.
+const PING_MS = Number(process.env.ACHAT_PING_MS ?? 30_000);
+
 export function startServer(dbFile: string, host: string, port: number): Promise<RunningServer> {
   const db = new Db(dbFile);
   const hub = new Hub();
+  // Sockets that have answered since the last ping sweep.
+  const alive = new Set<WebSocket>();
   const app = express();
   app.use(express.json({ limit: '256kb' }));
 
@@ -261,19 +267,43 @@ export function startServer(dbFile: string, host: string, port: number): Promise
       ws.send(JSON.stringify({ type: 'message', message } satisfies ServerFrame));
     }
 
-    const heartbeat = () => db.touchLastSeen(userId, now());
+    alive.add(ws);
+    const heartbeat = () => {
+      alive.add(ws);
+      db.touchLastSeen(userId, now());
+    };
     ws.on('pong', heartbeat);
     ws.on('message', heartbeat);
     ws.on('close', () => {
       hub.remove(userId, ws);
+      alive.delete(ws);
       db.touchLastSeen(userId, now());
     });
     ws.on('error', () => hub.remove(userId, ws));
   });
 
+  // Reap sockets that stopped answering.
+  //
+  // A peer that vanishes without closing its TCP connection — laptop lid shut, network
+  // dropped, process wedged — leaves a socket in readyState OPEN for minutes. We used to
+  // ping and never look at the pong, so such a ghost stayed *online* in the roster, and
+  // hub.send happily reported delivered=true for messages nobody received. Worse, an online
+  // holder blocks its username, so a crashed window locked its own name away from the next
+  // session on that machine.
+  //
+  // So: ping every interval, and terminate anything that did not answer the previous one.
+  // Terminating fires 'close', which takes it out of the hub — presence, delivery and
+  // username reclaim all become honest again within ~2 intervals.
   const interval = setInterval(() => {
-    for (const ws of wss.clients) if (ws.readyState === WebSocket.OPEN) ws.ping();
-  }, 30_000);
+    for (const ws of wss.clients) {
+      if (!alive.has(ws)) {
+        ws.terminate();
+        continue;
+      }
+      alive.delete(ws); // must be re-added by a pong before the next sweep
+      if (ws.readyState === WebSocket.OPEN) ws.ping();
+    }
+  }, PING_MS);
 
   return new Promise((resolve) => {
     httpServer.listen(port, host, () => {
