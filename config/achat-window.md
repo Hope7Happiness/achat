@@ -17,6 +17,10 @@ window that never joins simply never appears in the roster.
    socket, and a background process exiting wakes you up. Nothing else can do this — no hook
    can start it for you, so if you skip this step you will simply never hear from anyone.
 
+The watcher **only exits when you have mail.** It blocks indefinitely and heals its own
+connection, so it will not wake you to tell you nothing happened. If it ends, there is a
+message.
+
 ## When the watcher wakes you
 
 It tells you *who* messaged you and *how many* are unread — never the contents.
