@@ -212,6 +212,32 @@ export async function unread(session: string): Promise<UnreadSummary> {
 }
 
 // Explicitly mark a conversation read. Returns the refreshed unread summary.
+export interface Receipt {
+  with: string;
+  lastReadSeq: number;
+  readAt: number | null;
+  sent: number;
+  readByThem: number;
+  unreadByThem: number;
+}
+
+// Has the peer read what I sent them? Pull-only; never announced.
+export async function receipt(session: string, withUser: string): Promise<Receipt> {
+  await ensureServer();
+  const q = new URLSearchParams({ with: withUser });
+  return api<Receipt>(`/receipts?${q}`, session);
+}
+
+export function formatReceipt(r: Receipt): string {
+  if (r.sent === 0) return `you have not sent ${r.with} anything`;
+  if (r.unreadByThem === 0) {
+    const when = r.readAt ? ` (last read ${new Date(r.readAt).toLocaleTimeString()})` : '';
+    return `${r.with} has read all ${r.sent} of your messages${when}`;
+  }
+  const seen = r.readByThem === 0 ? 'none' : `${r.readByThem} of ${r.sent}`;
+  return `${r.with} has read ${seen} — ${r.unreadByThem} still unread`;
+}
+
 export async function markRead(session: string, withUser: string): Promise<UnreadSummary> {
   await ensureServer();
   return api<UnreadSummary>('/read', session, { method: 'POST', body: JSON.stringify({ with: withUser }) });

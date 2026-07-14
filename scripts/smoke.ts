@@ -100,6 +100,27 @@ try {
   const cu = await client.unread(carolSecret);
   check(cu.total === 1 && cu.bySender[0]?.username === 'alice', 'carol sees 1 unread from alice');
 
+  // 5b. Read receipts: the mirror image of unread — has the PEER read what I sent?
+  const r0 = await client.receipt(bobSecret, 'alice');
+  check(r0.sent === 2 && r0.readByThem === 2 && r0.unreadByThem === 0, 'bob sees that alice read both of his messages');
+  check(r0.readAt !== null, 'the receipt records when they read');
+
+  const carolR = await client.receipt(carolSecret, 'alice');
+  check(
+    carolR.sent === 1 && carolR.readByThem === 0 && carolR.unreadByThem === 1,
+    "carol sees that alice has NOT read hers (alice only marked bob's conversation read)",
+  );
+
+  // A receipt reflects explicit mark-read, not mere reading. Alice pulling up the history
+  // must not tell carol she has read it — the badge and the receipt are the same state, and
+  // that state is only moved by achat-mark-read.
+  await client.history(aliceSecret, 'carol', 50);
+  const carolAfterPeek = await client.receipt(carolSecret, 'alice');
+  check(
+    carolAfterPeek.unreadByThem === 1,
+    'alice reading the history does not flip carol’s receipt (only mark-read does)',
+  );
+
   // 6. Username uniqueness while online
   const w2 = client.watch(aliceSecret, readCursor(aliceId), () => {});
   await new Promise((r) => setTimeout(r, 150));

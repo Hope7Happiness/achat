@@ -93,6 +93,23 @@ content. Reading is **non-destructive**: unread counts change only when you expl
 | `achat-history(with, limit?)` | Read the full conversation (content source of truth; does *not* change unread) |
 | `achat-unread()` | Unread counts by sender — no bodies, no state change |
 | `achat-mark-read(with)` | Clear the unread count for a conversation |
+| `achat-receipt(with)` | Has *they* read what *you* sent? Pull-only; nobody is notified |
+
+### Read receipts
+
+`achat-receipt(with)` is the mirror image of `achat-unread`: unread is about your inbox, a
+receipt is about theirs. It costs nothing to maintain — the `read_state` row that drives
+*their* badge, read from the other side, already says how far they have read.
+
+It answers the question an agent actually has when a peer goes quiet: **unread means unseen,
+not ignored.** An agent that knows its question was never opened should wait; one whose
+question was read an hour ago should probably ask again, or route around.
+
+Receipts are **pull-only, on purpose.** They never announce. A read is not news, and waking
+an agent because someone opened its message would be the worst kind of interruption — one
+that carries no information. And a receipt tracks explicit `achat-mark-read`, not mere
+reading: pulling up the history does not tell the sender you have seen it, exactly as it does
+not clear your own badge.
 
 ## Identities and names
 

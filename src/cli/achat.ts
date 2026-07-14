@@ -9,6 +9,7 @@
 //   history --session S --with B [--limit N]      print a conversation (does NOT mark read)
 //   unread  --session S                           unread counts by sender (no bodies)
 //   read    --session S --with B                  mark a conversation read
+//   receipt --session S --with B                  has B read what you sent them? (pull-only)
 //   watch   --user U | --session S [--timeout S]  block until a message arrives, notify, exit.
 //                                                  Blocks forever by default and reconnects
 //                                                  underneath, so exiting means "you have mail".
@@ -110,8 +111,6 @@ async function cmdHistory(flags: Record<string, string>): Promise<void> {
   for (const m of msgs) process.stdout.write(fmt(m) + '\n');
 }
 
-// Push primitive: block until a message arrives, then NOTIFY (sender + unread count only —
-// not the body; read bodies with achat-history) and exit 0. Timeout with nothing new exits 2.
 // Block until mail arrives, then print who it is from and exit.
 //
 // The exit is the announcement: Claude Code re-invokes the agent when a background process
@@ -219,6 +218,13 @@ async function cmdRead(flags: Record<string, string>): Promise<void> {
   process.stdout.write(`marked ${other} read. now: ${client.formatUnread(u)}\n`);
 }
 
+async function cmdReceipt(flags: Record<string, string>): Promise<void> {
+  const session = requireSession(flags);
+  const other = flags.with;
+  if (!other) throw new Error('usage: achat receipt --session S --with B');
+  process.stdout.write(client.formatReceipt(await client.receipt(session, other)) + '\n');
+}
+
 async function cmdForget(flags: Record<string, string>, positional: string[]): Promise<void> {
   const target = positional[0];
   if (!target) throw new Error('usage: achat forget <username|userId>');
@@ -248,11 +254,12 @@ async function main(): Promise<void> {
     case 'history': return cmdHistory(flags);
     case 'unread': return cmdUnread(flags);
     case 'read': return cmdRead(flags);
+    case 'receipt': return cmdReceipt(flags);
     case 'watch': return cmdWatch(flags);
     case 'forget': return cmdForget(flags, positional);
     case 'prune': return cmdPrune();
     default:
-      process.stderr.write('usage: achat <serve|start|send|list|history|unread|read|watch|forget|prune> ...\n');
+      process.stderr.write('usage: achat <serve|start|send|list|history|unread|read|receipt|watch|forget|prune> ...\n');
       process.exit(1);
   }
 }

@@ -55,10 +55,14 @@ export class Db {
       CREATE TABLE IF NOT EXISTS seq_counter (id INTEGER PRIMARY KEY CHECK (id = 0), value INTEGER NOT NULL);
       INSERT OR IGNORE INTO seq_counter (id, value) VALUES (0, 0);
     `);
-    // Added after the initial schema; older databases predate it.
-    const cols = this.db.prepare('PRAGMA table_info(identities)').all() as { name: string }[];
-    if (!cols.some((c) => c.name === 'machine_id')) {
+    // Added after the initial schema; older databases predate them.
+    const identityCols = this.db.prepare('PRAGMA table_info(identities)').all() as { name: string }[];
+    if (!identityCols.some((c) => c.name === 'machine_id')) {
       this.db.exec('ALTER TABLE identities ADD COLUMN machine_id TEXT');
+    }
+    const readCols = this.db.prepare('PRAGMA table_info(read_state)').all() as { name: string }[];
+    if (!readCols.some((c) => c.name === 'read_at')) {
+      this.db.exec('ALTER TABLE read_state ADD COLUMN read_at INTEGER');
     }
   }
 
@@ -227,13 +231,50 @@ export class Db {
     return row.hw;
   }
 
-  markRead(userId: string, peerId: string, seq: number): void {
+  markRead(userId: string, peerId: string, seq: number, now: number): void {
     this.db
       .prepare(
-        `INSERT INTO read_state (user_id, peer_id, last_read_seq) VALUES (?, ?, ?)
-         ON CONFLICT (user_id, peer_id) DO UPDATE SET last_read_seq = MAX(last_read_seq, excluded.last_read_seq)`,
+        `INSERT INTO read_state (user_id, peer_id, last_read_seq, read_at) VALUES (?, ?, ?, ?)
+         ON CONFLICT (user_id, peer_id) DO UPDATE SET
+           last_read_seq = MAX(last_read_seq, excluded.last_read_seq),
+           read_at       = excluded.read_at`,
       )
-      .run(userId, peerId, seq);
+      .run(userId, peerId, seq, now);
+  }
+
+  // Has the peer read what I sent them?
+  //
+  // The same read_state row that drives *their* unread badge answers this, read from the
+  // other side: it records how far they have read in the conversation with me. So a receipt
+  // costs nothing extra to maintain — it is the existing state, queried by the sender.
+  //
+  // Read receipts are pull-only on purpose. They must never announce: a read is not news,
+  // and waking an agent because someone opened its message would be the worst kind of
+  // interruption — one that carries no information.
+  receipt(
+    me: string,
+    peer: string,
+  ): { lastReadSeq: number; readAt: number | null; sent: number; readByThem: number; unreadByThem: number } {
+    const row = this.db
+      .prepare('SELECT last_read_seq, read_at FROM read_state WHERE user_id = ? AND peer_id = ?')
+      .get(peer, me) as { last_read_seq: number; read_at: number | null } | undefined;
+    const lastReadSeq = row?.last_read_seq ?? 0;
+
+    const counts = this.db
+      .prepare(
+        `SELECT COUNT(*) AS sent,
+                COALESCE(SUM(CASE WHEN seq <= ? THEN 1 ELSE 0 END), 0) AS readByThem
+         FROM messages WHERE from_id = ? AND to_id = ?`,
+      )
+      .get(lastReadSeq, me, peer) as { sent: number; readByThem: number };
+
+    return {
+      lastReadSeq,
+      readAt: row?.read_at ?? null,
+      sent: counts.sent,
+      readByThem: counts.readByThem,
+      unreadByThem: counts.sent - counts.readByThem,
+    };
   }
 
   // Unread counts for `userId`, grouped by sender, plus the inbox high-water mark.

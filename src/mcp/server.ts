@@ -163,12 +163,30 @@ server.registerTool(
   {
     description:
       'Check how many unread messages you have and from whom (counts only, no bodies and no ' +
-      'state change). Read the actual messages with achat-history, which clears that conversation.',
+      'state change). Read the actual messages with achat-history; clear the count with achat-mark-read.',
     inputSchema: {},
   },
   async () => {
     requireStarted();
     return { content: [{ type: 'text', text: client.formatUnread(await client.unread(SESSION)) }] };
+  },
+);
+
+server.registerTool(
+  'achat-receipt',
+  {
+    description:
+      'Has someone read what YOU sent them? Returns how many of your messages they have read ' +
+      'and when. This is the mirror image of achat-unread, which is about your own inbox. ' +
+      'Nobody is notified when you check, and nobody is notified when they read you — receipts ' +
+      'are pull-only. Useful before concluding that a peer is ignoring you: an unread message ' +
+      'means they have not seen it, not that they have declined to answer.',
+    inputSchema: { with: z.string().describe('the username whose read state you want') },
+  },
+  async ({ with: other }) => {
+    requireStarted();
+    const r = await client.receipt(SESSION, other);
+    return { content: [{ type: 'text', text: client.formatReceipt(r) }] };
   },
 );
 

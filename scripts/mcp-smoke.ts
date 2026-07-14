@@ -38,11 +38,20 @@ await bob.connect(transport());
 try {
   const tools = await alice.listTools();
   const names = tools.tools.map((t) => t.name).sort();
+  // Exact, not a subset check: a subset check silently tolerates a tool you forgot to
+  // register, and forgetting to register one is precisely the mistake worth catching.
+  const expected = [
+    'achat-history',
+    'achat-list',
+    'achat-mark-read',
+    'achat-receipt',
+    'achat-send',
+    'achat-start',
+    'achat-unread',
+  ];
   check(
-    ['achat-history', 'achat-list', 'achat-mark-read', 'achat-send', 'achat-start', 'achat-unread'].every((n) =>
-      names.includes(n),
-    ),
-    `all achat-* tools registered (${names.join(', ')})`,
+    names.length === expected.length && expected.every((n, i) => names[i] === n),
+    `exactly the expected achat-* tools are registered (${names.join(', ')})`,
   );
 
   const startA = await alice.callTool({ name: 'achat-start', arguments: { username: 'alice' } });
@@ -65,8 +74,17 @@ try {
   const stillUnread = await alice.callTool({ name: 'achat-unread', arguments: {} });
   check(/1 unread/.test(textOf(stillUnread)), 'reading history did NOT clear unread');
 
+  // Bob asks whether alice has read him. Before she marks it read, she has not — which is
+  // the distinction that matters to an agent waiting on a reply: "unread" means unseen, not
+  // ignored.
+  const beforeRead = await bob.callTool({ name: 'achat-receipt', arguments: { with: 'alice' } });
+  check(/1 still unread/.test(textOf(beforeRead)), 'achat-receipt: bob sees alice has not read him yet');
+
   const marked = await alice.callTool({ name: 'achat-mark-read', arguments: { with: 'bob' } });
   check(/no unread/.test(textOf(marked)), 'achat-mark-read clears the unread');
+
+  const afterRead = await bob.callTool({ name: 'achat-receipt', arguments: { with: 'alice' } });
+  check(/has read all 1/.test(textOf(afterRead)), 'achat-receipt: bob now sees alice read his message');
 } finally {
   await alice.close();
   await bob.close();
