@@ -149,6 +149,35 @@ try {
   }
   check(outsiderBlocked, 'someone the file was not sent to cannot fetch it');
 
+  // 5d. Reclaiming a username must not orphan the mail addressed to the previous holder.
+  //
+  // Reported from the field: someone sent a file to an offline peer ("queued — they are
+  // offline"), and moments later the whole conversation was empty — not even their own sent
+  // message. It looked like the offline queue had lost it. It had not: the peer's machine had
+  // opened a new window under the same name, which reclaimed it under a NEW userId, and the
+  // message was addressed to the old one. Invisible to both sides. A name is how you are
+  // addressed, so a name that moves must bring its mail with it.
+  const dave1 = generateSecret();
+  await client.start(dave1, 'dave');
+  await client.send(aliceSecret, 'dave', 'sent while dave was offline');
+  await client.sendFile(bobSecret, 'dave', srcPath, 'and a file, too');
+
+  const dave2 = generateSecret(); // a NEW session on the same machine reclaims the name
+  const reborn2 = await client.start(dave2, 'dave');
+  check(reborn2.userId !== deriveUserId(dave1), 'sanity: the new dave session has a different userId');
+
+  const aliceView = await client.history(aliceSecret, 'dave', 50);
+  check(
+    aliceView.some((m) => m.body === 'sent while dave was offline'),
+    "the sender's own message survives the recipient reclaiming its name",
+  );
+
+  const daveUnread = await client.unread(dave2);
+  check(daveUnread.total === 2, 'the new session inherits the mail addressed to the name (2 unread)');
+
+  const daveFiles = await client.history(dave2, 'bob', 50);
+  check(daveFiles.some((m) => m.file?.name === 'outgoing.bin'), 'the queued FILE survives the reclaim too');
+
   // 6. Username uniqueness while online
   const w2 = client.watch(aliceSecret, readCursor(aliceId), () => {});
   await new Promise((r) => setTimeout(r, 150));

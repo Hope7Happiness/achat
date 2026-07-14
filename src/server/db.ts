@@ -114,10 +114,14 @@ export class Db {
         .prepare('SELECT user_id, machine_id FROM identities WHERE username = ?')
         .get(username) as { user_id: string; machine_id: string | null } | undefined;
 
+      let inherit: string | null = null;
       if (holder && holder.user_id !== userId) {
         const sameMachine = !!machineId && holder.machine_id === machineId;
         if (!sameMachine || isOnline(holder.user_id)) throw new UsernameTakenError(username);
-        this.db.prepare('UPDATE identities SET username = NULL WHERE user_id = ?').run(holder.user_id);
+        inherit = holder.user_id;
+        // Release the name before the new identity claims it, or the UNIQUE index fires. The
+        // old row is deleted by succeed() below; this just gets it out of the way first.
+        this.db.prepare('UPDATE identities SET username = NULL WHERE user_id = ?').run(inherit);
       }
 
       const exists = this.db.prepare('SELECT 1 FROM identities WHERE user_id = ?').get(userId);
@@ -132,12 +136,58 @@ export class Db {
           )
           .run(userId, username, machineId, now, null);
       }
+
+      if (inherit) this.succeed(inherit, userId);
+
       this.db.exec('COMMIT');
       return { userId, username };
     } catch (err) {
       this.db.exec('ROLLBACK');
       throw err;
     }
+  }
+
+  // A name has just moved from one session to the next on the same machine. Move its mail
+  // with it, and retire the old identity.
+  //
+  // Without this, reclaiming a name silently orphans everything addressed to the previous
+  // holder: the messages still exist, keyed by a userId nothing resolves to any more, so the
+  // recipient never sees them AND the sender's own history with that name goes blank. That
+  // reads, from the outside, exactly like a lost message queue — which is how it was
+  // reported. The queue was never the problem; the addressee moved out from under it.
+  //
+  // A name is how you are addressed. If it can move, its mail has to move too. So the durable
+  // participant is really (machine, name); a session is just its current incarnation.
+  private succeed(oldId: string, newId: string): void {
+    this.db.prepare('UPDATE messages SET from_id = ? WHERE from_id = ?').run(newId, oldId);
+    this.db.prepare('UPDATE messages SET to_id = ? WHERE to_id = ?').run(newId, oldId);
+
+    // Read cursors merge rather than overwrite: whichever incarnation had read further wins,
+    // so inheriting mail cannot resurrect an already-cleared badge.
+    this.db
+      .prepare(
+        `INSERT INTO read_state (user_id, peer_id, last_read_seq, read_at)
+           SELECT ?, peer_id, last_read_seq, read_at FROM read_state WHERE user_id = ?
+         ON CONFLICT (user_id, peer_id) DO UPDATE SET
+           last_read_seq = MAX(last_read_seq, excluded.last_read_seq),
+           read_at       = MAX(COALESCE(read_at, 0), COALESCE(excluded.read_at, 0))`,
+      )
+      .run(newId, oldId);
+    this.db.prepare('DELETE FROM read_state WHERE user_id = ?').run(oldId);
+
+    // ...and the same for other people's cursors that point AT the old identity.
+    this.db
+      .prepare(
+        `INSERT INTO read_state (user_id, peer_id, last_read_seq, read_at)
+           SELECT user_id, ?, last_read_seq, read_at FROM read_state WHERE peer_id = ?
+         ON CONFLICT (user_id, peer_id) DO UPDATE SET
+           last_read_seq = MAX(last_read_seq, excluded.last_read_seq),
+           read_at       = MAX(COALESCE(read_at, 0), COALESCE(excluded.read_at, 0))`,
+      )
+      .run(newId, oldId);
+    this.db.prepare('DELETE FROM read_state WHERE peer_id = ?').run(oldId);
+
+    this.db.prepare('DELETE FROM identities WHERE user_id = ?').run(oldId);
   }
 
   usernameOf(userId: string): string | null {
