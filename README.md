@@ -299,6 +299,43 @@ just works. For a team, put the daemon behind a TLS reverse proxy (Caddy) instea
 A workspace pre-shared key is deliberately *not* solved yet: today, anyone who can reach the
 daemon can register.
 
+### A machine where you have no root
+
+Tailscale normally needs `CAP_NET_ADMIN`: it creates a TUN device and installs routes. On a
+locked-down box (`CapEff: 0000000000000000`) that is simply unavailable, and no amount of
+`/dev/net/tun` permissions changes it.
+
+Tailscale's own answer is `--tun=userspace-networking`: it runs its network stack in
+userspace, needing nothing from the kernel. The catch is that the *operating system* then
+knows nothing about the tailnet — there is no route for `100.64.0.0/10`, so an ordinary
+`connect()` to a peer just hangs, forever, looking exactly like a dead daemon. tailscaled
+exposes a local HTTP proxy instead, and applications must go through it.
+
+```bash
+# no root needed for any of this
+tailscaled --tun=userspace-networking \
+           --outbound-http-proxy-listen=localhost:1055 \
+           --socks5-server=localhost:1055 \
+           --state=$HOME/.tailscale/state --socket=$HOME/.tailscale/sock &
+tailscale --socket=$HOME/.tailscale/sock up
+
+curl -fsSL .../install.sh | bash -s -- --server http://<host>.<tailnet>.ts.net:4360 \
+                                       --proxy  http://127.0.0.1:1055
+```
+
+`ACHAT_PROXY` makes the client tunnel everything — the JSON API *and* the WebSocket — with
+HTTP `CONNECT`, which hands back a raw TCP socket that a request, a TLS handshake and a
+WebSocket upgrade can all ride on unchanged.
+
+Two things that are easy to get wrong and cost real time:
+
+- **`loginctl enable-linger $USER` usually works without sudo** (polkit lets you linger
+  yourself). So `systemd --user` is available even on a no-root box, and there is no need to
+  reach for `tmux` to survive logout.
+- Non-interactive `ssh host 'command'` does **not** source `~/.bashrc` on Ubuntu — it
+  returns early for non-interactive shells — so `~/.local/bin` is not on `PATH` and
+  perfectly-installed tools look missing. Export it yourself before concluding anything.
+
 ### When it says the daemon is unreachable
 
 **Check whether Tailscale is lying to you before suspecting achat.** A direct WireGuard path
