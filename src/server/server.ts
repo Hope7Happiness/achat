@@ -125,6 +125,50 @@ export function startServer(dbFile: string, host: string, port: number): Promise
     res.json({ identities: db.listIdentities(hub.onlineIds()) });
   });
 
+  // Forget an identity. Body: { machine?: <machine secret> }, or x-achat-session for self.
+  //
+  // Authorised by *machine ownership*: the machine that claimed an identity may forget it,
+  // and no other machine ever can — deleting someone else's identity would be deleting
+  // their account. An identity that is currently online is refused (you would be yanking a
+  // live window out from under itself), unless the caller proves it *is* that identity by
+  // presenting its session secret.
+  app.delete('/identities/:userId', (req, res) => {
+    const target = req.params.userId;
+    if (!db.usernameOf(target) && !db.machineOf(target)) {
+      return res.status(404).json({ error: `unknown identity: ${target}` });
+    }
+    const session = (req.header('x-achat-session') ?? '').toString();
+    const isSelf = !!session && deriveUserId(session) === target;
+
+    if (!isSelf) {
+      const machine = (req.body?.machine ?? '').toString();
+      if (!machine) return res.status(401).json({ error: 'machine secret or own session required' });
+      if (deriveUserId(machine) !== db.machineOf(target)) {
+        return res.status(403).json({ error: 'that identity belongs to another machine' });
+      }
+      if (hub.isOnline(target)) {
+        return res.status(409).json({ error: 'that identity is online right now' });
+      }
+    }
+    db.deleteIdentity(target);
+    res.json({ forgotten: target });
+  });
+
+  // Sweep up the dead sessions this machine left behind. Body: { machine }.
+  // Online identities are kept. Messages are never deleted (see Db.deleteIdentity).
+  app.post('/identities/prune', (req, res) => {
+    const machine = (req.body?.machine ?? '').toString();
+    if (!machine) return res.status(401).json({ error: 'machine secret required' });
+    const machineId = deriveUserId(machine);
+    const forgotten: string[] = [];
+    for (const id of db.identitiesOfMachine(machineId)) {
+      if (hub.isOnline(id.userId)) continue;
+      db.deleteIdentity(id.userId);
+      forgotten.push(id.username ?? id.userId);
+    }
+    res.json({ forgotten });
+  });
+
   // Send a pairwise message. Body: { to (username), body }.
   app.post('/messages', (req, res) => {
     const me = caller(req, res);

@@ -11,6 +11,8 @@
 //   read    --session S --with B                  mark a conversation read
 //   watch   --user U | --session S [--timeout S]  block on WS until a message, notify, exit
 //                                                  (run via Claude Code background Bash for push)
+//   forget  <username|userId>                     delete an identity this machine owns
+//   prune                                         delete every offline identity this machine owns
 
 import { startServer } from '../server/server.ts';
 import * as client from '../client/client.ts';
@@ -157,6 +159,24 @@ async function cmdRead(flags: Record<string, string>): Promise<void> {
   process.stdout.write(`marked ${other} read. now: ${client.formatUnread(u)}\n`);
 }
 
+async function cmdForget(flags: Record<string, string>, positional: string[]): Promise<void> {
+  const target = positional[0];
+  if (!target) throw new Error('usage: achat forget <username|userId>');
+  // Pass a session if we have one, so an identity can also forget *itself* while online.
+  const session = flags.session ?? (flags.user ? readSessionSecret(flags.user) : null) ?? process.env.ACHAT_SESSION;
+  const { forgotten } = await client.forget(target, session ?? undefined);
+  process.stdout.write(`forgot ${target} (${forgotten})\n`);
+}
+
+async function cmdPrune(): Promise<void> {
+  const { forgotten } = await client.prune();
+  process.stdout.write(
+    forgotten.length
+      ? `forgot ${forgotten.length} offline identit${forgotten.length === 1 ? 'y' : 'ies'} owned by this machine: ${forgotten.join(', ')}\n`
+      : 'nothing to forget — this machine has no offline identities\n',
+  );
+}
+
 async function main(): Promise<void> {
   const [, , cmd, ...rest] = process.argv;
   const { flags, positional } = parseFlags(rest);
@@ -169,8 +189,10 @@ async function main(): Promise<void> {
     case 'unread': return cmdUnread(flags);
     case 'read': return cmdRead(flags);
     case 'watch': return cmdWatch(flags);
+    case 'forget': return cmdForget(flags, positional);
+    case 'prune': return cmdPrune();
     default:
-      process.stderr.write('usage: achat <serve|start|send|list|history|unread|read|watch> ...\n');
+      process.stderr.write('usage: achat <serve|start|send|list|history|unread|read|watch|forget|prune> ...\n');
       process.exit(1);
   }
 }

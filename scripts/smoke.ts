@@ -43,6 +43,16 @@ async function registerFromOtherMachine(session: string, username: string): Prom
   if (!res.ok) throw new Error(((await res.json()) as { error: string }).error);
 }
 
+// Try to delete someone else's identity while presenting a foreign machine secret.
+async function forgetFromOtherMachine(userId: string): Promise<void> {
+  const res = await fetch(`http://127.0.0.1:${PORT}/identities/${userId}`, {
+    method: 'DELETE',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ machine: generateSecret() }),
+  });
+  if (!res.ok) throw new Error(((await res.json()) as { error: string }).error);
+}
+
 try {
   // 1. Register
   const a = await client.start(aliceSecret, 'alice');
@@ -127,6 +137,36 @@ try {
     blocked = true;
   }
   check(blocked, 'another machine cannot claim an offline username');
+
+  // 10. Forgetting an identity. Same ownership rule: this machine may, another may not.
+  let foreignBlocked = false;
+  try {
+    await forgetFromOtherMachine(deriveUserId(bobSecret));
+  } catch {
+    foreignBlocked = true;
+  }
+  check(foreignBlocked, 'another machine cannot forget an identity it does not own');
+
+  // Leave alice with a fresh unread from bob, then delete bob out from under it.
+  await client.send(bobSecret, 'alice-prime', 'one last word before I vanish');
+  const before = await client.unread(aliceSecret);
+  check(before.bySender.some((s) => s.username === 'bob'), 'sanity: alice has an unread from bob');
+
+  await client.forget('bob');
+  const rosterAfter = await client.list();
+  check(!rosterAfter.some((i) => i.username === 'bob'), 'forget removes the identity from the roster');
+
+  // Deleting an identity must not delete the other party's mail. The sender's name is
+  // resolved from the message's own snapshot once the identity row is gone.
+  const after = await client.unread(aliceSecret);
+  check(
+    after.total === before.total && after.bySender.some((s) => s.username === 'bob'),
+    "alice's unread from bob survives, still named 'bob' via the message snapshot",
+  );
+
+  // 11. prune sweeps the offline identities this machine owns.
+  const pruned = await client.prune();
+  check(pruned.forgotten.length > 0, `prune forgot this machine's offline identities (${pruned.forgotten.join(', ')})`);
 } finally {
   await running.close();
 }

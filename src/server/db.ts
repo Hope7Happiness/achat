@@ -132,6 +132,40 @@ export class Db {
     return row?.user_id ?? null;
   }
 
+  machineOf(userId: string): string | null {
+    const row = this.db.prepare('SELECT machine_id FROM identities WHERE user_id = ?').get(userId) as
+      | { machine_id: string | null }
+      | undefined;
+    return row?.machine_id ?? null;
+  }
+
+  // Forget an identity: it leaves the roster and frees its username.
+  //
+  // Messages are deliberately kept. Every message carries the sender's and recipient's name
+  // as it was at send time, and unreadSummary falls back to that snapshot, so the other
+  // party's history and unread counts survive intact — deleting an identity must not delete
+  // someone else's conversation. Only the identity's own read cursors go with it.
+  deleteIdentity(userId: string): void {
+    this.db.exec('BEGIN');
+    try {
+      this.db.prepare('DELETE FROM read_state WHERE user_id = ?').run(userId);
+      this.db.prepare('DELETE FROM identities WHERE user_id = ?').run(userId);
+      this.db.exec('COMMIT');
+    } catch (err) {
+      this.db.exec('ROLLBACK');
+      throw err;
+    }
+  }
+
+  // Every identity claimed by this machine — used to sweep up the dead sessions it left
+  // behind (one session == one user, so a busy machine accumulates them fast).
+  identitiesOfMachine(machineId: string): { userId: string; username: string | null }[] {
+    const rows = this.db
+      .prepare('SELECT user_id, username FROM identities WHERE machine_id = ?')
+      .all(machineId) as { user_id: string; username: string | null }[];
+    return rows.map((r) => ({ userId: r.user_id, username: r.username }));
+  }
+
   touchLastSeen(userId: string, now: number): void {
     this.db.prepare('UPDATE identities SET last_seen = ? WHERE user_id = ?').run(now, userId);
   }

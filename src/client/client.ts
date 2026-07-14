@@ -24,9 +24,9 @@ import type { Identity, Message, SendResponse, StartResponse, ServerFrame } from
 const here = dirname(fileURLToPath(import.meta.url));
 const cliEntry = join(here, '..', 'cli', 'achat.ts');
 
-async function health(base: string): Promise<boolean> {
+async function health(base: string, timeoutMs = 1500): Promise<boolean> {
   try {
-    const res = await fetch(`${base}/health`, { signal: AbortSignal.timeout(1500) });
+    const res = await fetch(`${base}/health`, { signal: AbortSignal.timeout(timeoutMs) });
     return res.ok;
   } catch {
     return false;
@@ -39,8 +39,18 @@ export async function ensureServer(): Promise<void> {
   if (remote) {
     // Pure-client mode: never auto-spawn. A local daemon here would be a separate,
     // empty world that silently swallows your messages.
-    if (await health(remote)) return;
-    throw new Error(`achat daemon unreachable at ${remote} (ACHAT_SERVER). Is it running, and is this machine on the same network?`);
+    //
+    // Retry with a generous timeout. The first packet to an idle tailnet peer has to do NAT
+    // traversal (or fall back to a DERP relay), which routinely takes several seconds — far
+    // longer than the sub-second round trip you get once the path is warm. A localhost-sized
+    // timeout here reports a perfectly healthy daemon as unreachable.
+    for (const timeout of [5000, 8000, 8000]) {
+      if (await health(remote, timeout)) return;
+    }
+    throw new Error(
+      `achat daemon unreachable at ${remote} (ACHAT_SERVER). Check that this machine is on the tailnet ` +
+        `(tailscale status) and that the daemon is up on the host (systemctl --user status achat).`,
+    );
   }
   if (await health(baseUrl(readServerInfo()))) return;
 
@@ -94,6 +104,27 @@ export async function send(session: string, to: string, body: string): Promise<S
 export async function list(): Promise<Identity[]> {
   await ensureServer();
   return (await api<{ identities: Identity[] }>('/identities', null)).identities;
+}
+
+// Forget an identity, by username or userId. Authorised by this machine's ownership of it
+// (and, for an identity that is still online, only by that identity itself).
+export async function forget(target: string, session?: string): Promise<{ forgotten: string }> {
+  await ensureServer();
+  const roster = await list();
+  const userId = roster.find((i) => i.username === target)?.userId ?? target;
+  return api<{ forgotten: string }>(`/identities/${encodeURIComponent(userId)}`, session ?? null, {
+    method: 'DELETE',
+    body: JSON.stringify({ machine: machineSecret() }),
+  });
+}
+
+// Sweep up every offline identity this machine left behind.
+export async function prune(): Promise<{ forgotten: string[] }> {
+  await ensureServer();
+  return api<{ forgotten: string[] }>('/identities/prune', null, {
+    method: 'POST',
+    body: JSON.stringify({ machine: machineSecret() }),
+  });
 }
 
 export async function history(session: string, other: string, limit = 50): Promise<Message[]> {
