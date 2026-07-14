@@ -111,6 +111,9 @@ done
 
 if [ -d "$APP/.git" ]; then
   say "updating $APP"
+  # An older install ran `npm install`, which rewrote package-lock.json and left this
+  # deployment permanently dirty — every --ff-only pull after it fails. Put the lockfile back.
+  git -C "$APP" checkout --quiet -- package-lock.json 2>/dev/null || true
   git -C "$APP" pull --ff-only --quiet
 else
   say "cloning achat into $APP"
@@ -118,7 +121,10 @@ else
   git clone --quiet --depth 1 "$REPO" "$APP"
 fi
 say "installing dependencies"
-(cd "$APP" && run_npm install --silent --omit=dev >/dev/null)
+# `npm ci`, not `npm install`: install *rewrites* package-lock.json, which leaves this
+# deployment's working tree permanently dirty and makes every future `git pull --ff-only`
+# fail. ci installs exactly the lockfile and touches nothing.
+(cd "$APP" && run_npm ci --silent --omit=dev >/dev/null)
 
 # ---- work out the server URL ------------------------------------------------
 

@@ -98,19 +98,29 @@ async function cmdUpdate(): Promise<void> {
   };
 
   process.stdout.write(`updating ${dir} (currently ${before})\n`);
+
+  // `npm install` rewrites package-lock.json, so a deployment installed that way has a dirty
+  // tree and every --ff-only pull fails. Put the lockfile back — but only the lockfile: if
+  // anything else has been edited, this may be someone's working checkout, and quietly
+  // discarding their changes would be far worse than refusing to update.
+  const dirty = run('git', ['status', '--porcelain']).split('\n').filter(Boolean);
+  const lockOnly = dirty.every((line) => line.trim().endsWith('package-lock.json'));
+  if (dirty.length && lockOnly) run('git', ['checkout', '--', 'package-lock.json']);
+  else if (dirty.length) {
+    throw new Error(`${dir} has local changes; commit or stash them first:\n${dirty.join('\n')}`);
+  }
+
   run('git', ['pull', '--ff-only', '--quiet']);
   const after = readCommitFresh(dir);
-  if (after === before) {
-    process.stdout.write(`already up to date (${before})\n`);
-  } else {
-    process.stdout.write(`${before} → ${after}\n`);
-  }
-  // Dependencies can change with the code; installing when nothing moved is cheap and safe.
-  // Drive npm with *this* node — the machine's `node` on PATH may be an ancient one (that is
-  // why the installer ships a private Node at all), and npm on PATH belongs to it.
+  process.stdout.write(after === before ? `already up to date (${before})\n` : `${before} → ${after}\n`);
+
+  // `npm ci`, not `npm install`, for the same reason: it installs exactly the lockfile and
+  // does not rewrite it. Drive it with *this* node — the machine's `node` on PATH may be an
+  // ancient one (that is why the installer ships a private Node at all), and npm on PATH
+  // belongs to that one.
   const bundledNpm = join(dirname(process.execPath), '..', 'lib', 'node_modules', 'npm', 'bin', 'npm-cli.js');
-  if (existsSync(bundledNpm)) run(process.execPath, [bundledNpm, 'install', '--silent', '--omit=dev']);
-  else run('npm', ['install', '--silent', '--omit=dev']);
+  if (existsSync(bundledNpm)) run(process.execPath, [bundledNpm, 'ci', '--silent', '--omit=dev']);
+  else run('npm', ['ci', '--silent', '--omit=dev']);
 
   const restarted = restartLocalDaemon();
   process.stdout.write(
