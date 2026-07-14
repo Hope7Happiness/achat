@@ -5,7 +5,10 @@
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { join, dirname } from 'node:path';
+import { request as httpRequest } from 'node:http';
+import { request as httpsRequest } from 'node:https';
 import { WebSocket } from 'ws';
+import { agentFor } from '../shared/proxy.ts';
 import {
   readServerInfo,
   writeServerInfo,
@@ -24,10 +27,64 @@ import type { Identity, Message, SendResponse, StartResponse, ServerFrame } from
 const here = dirname(fileURLToPath(import.meta.url));
 const cliEntry = join(here, '..', 'cli', 'achat.ts');
 
+interface RawResponse {
+  status: number;
+  ok: boolean;
+  body: string;
+}
+
+// One HTTP path for everything, built on node:http rather than fetch — fetch cannot be given
+// an agent, and on a machine reaching the tailnet through a userspace proxy the agent is the
+// only thing that gets us there (see shared/proxy.ts). Keeping a single code path means the
+// proxied and unproxied cases cannot drift apart.
+function rawRequest(
+  url: string,
+  opts: { method?: string; headers?: Record<string, string>; body?: string; timeoutMs?: number } = {},
+): Promise<RawResponse> {
+  const target = new URL(url);
+  const secure = target.protocol === 'https:';
+  const send = secure ? httpsRequest : httpRequest;
+  const agent = agentFor(target);
+  const payload = opts.body ? Buffer.from(opts.body, 'utf8') : null;
+  const headers = { ...(opts.headers ?? {}) };
+  // Be explicit rather than letting node fall back to chunked encoding: body parsers decide
+  // whether a request even *has* a body from these headers, and a DELETE that arrives with
+  // no parsed body reads on the server as "you sent no credentials".
+  if (payload) headers['content-length'] = String(payload.byteLength);
+
+  return new Promise((resolve, reject) => {
+    const req = send(
+      {
+        protocol: target.protocol,
+        hostname: target.hostname,
+        port: target.port || (secure ? 443 : 80),
+        path: `${target.pathname}${target.search}`,
+        method: opts.method ?? 'GET',
+        headers,
+        ...(agent ? { agent } : {}),
+      },
+      (res) => {
+        let data = '';
+        res.setEncoding('utf8');
+        res.on('data', (chunk) => (data += chunk));
+        res.on('end', () => {
+          const status = res.statusCode ?? 0;
+          resolve({ status, ok: status >= 200 && status < 300, body: data });
+        });
+      },
+    );
+    if (opts.timeoutMs) {
+      req.setTimeout(opts.timeoutMs, () => req.destroy(new Error(`timed out after ${opts.timeoutMs}ms`)));
+    }
+    req.on('error', reject);
+    if (payload) req.write(payload);
+    req.end();
+  });
+}
+
 async function health(base: string, timeoutMs = 1500): Promise<boolean> {
   try {
-    const res = await fetch(`${base}/health`, { signal: AbortSignal.timeout(timeoutMs) });
-    return res.ok;
+    return (await rawRequest(`${base}/health`, { timeoutMs })).ok;
   } catch {
     return false;
   }
@@ -74,15 +131,24 @@ export async function ensureServer(): Promise<void> {
   throw new Error(`achat daemon did not come up on ${base}`);
 }
 
-async function api<T>(path: string, session: string | null, opts: RequestInit = {}): Promise<T> {
-  const headers: Record<string, string> = { 'content-type': 'application/json', ...(opts.headers as any) };
+async function api<T>(
+  path: string,
+  session: string | null,
+  opts: { method?: string; body?: string } = {},
+): Promise<T> {
+  const headers: Record<string, string> = { 'content-type': 'application/json' };
   if (session) headers['x-achat-session'] = session;
-  const res = await fetch(`${baseUrl()}${path}`, { ...opts, headers });
+  const res = await rawRequest(`${baseUrl()}${path}`, { ...opts, headers });
   if (!res.ok) {
-    const detail = (await res.json().catch(() => ({ error: res.statusText }))) as { error?: string };
+    let detail: { error?: string } = {};
+    try {
+      detail = JSON.parse(res.body) as { error?: string };
+    } catch {
+      /* not JSON */
+    }
     throw new Error(detail.error ?? `HTTP ${res.status}`);
   }
-  return (await res.json()) as T;
+  return JSON.parse(res.body) as T;
 }
 
 // Register (or rename). Persists the session secret locally so the watcher can auth as this userId.
@@ -166,8 +232,12 @@ export function watch(
   onOpen?: () => void,
 ): { promise: Promise<void>; close: () => void } {
   const q = new URLSearchParams({ since: String(since) });
+  const url = `${wsUrl()}?${q}`;
   // The secret rides in the subprotocol, never in the URL — see shared/wire.ts.
-  const ws = new WebSocket(`${wsUrl()}?${q}`, [WS_PROTOCOL, sessionProtocol(session)]);
+  // The agent is what carries the socket through a proxy when there is one (shared/proxy.ts);
+  // ws upgrades over whatever socket the agent hands it, so a CONNECT tunnel just works.
+  const agent = agentFor(url);
+  const ws = new WebSocket(`${url}`, [WS_PROTOCOL, sessionProtocol(session)], agent ? { agent } : {});
 
   // Notice a server that vanished without closing the connection (host powered off, network
   // partition). The socket would otherwise stay OPEN for as long as TCP keeps retrying, and

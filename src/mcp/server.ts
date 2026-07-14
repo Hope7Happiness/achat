@@ -71,7 +71,7 @@ server.registerTool(
     // background shell, which does NOT inherit this MCP server's env — so without this, a
     // client machine's watcher would miss ACHAT_SERVER, fail to find the remote daemon, and
     // quietly spawn an empty local one.
-    const envPrefix = ['ACHAT_SERVER', 'ACHAT_HOME', 'ACHAT_PORT', 'ACHAT_HOST']
+    const envPrefix = ['ACHAT_SERVER', 'ACHAT_PROXY', 'ACHAT_HOME', 'ACHAT_PORT', 'ACHAT_HOST']
       .filter((k) => process.env[k])
       .map((k) => `${k}=${process.env[k]}`)
       .join(' ');

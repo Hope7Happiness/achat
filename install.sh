@@ -17,13 +17,17 @@ APP="${ACHAT_APP:-$HOME/.achat/app}"
 PORT="${ACHAT_PORT:-4360}"
 MODE=""
 SERVER=""
+PROXY="${ACHAT_PROXY:-}"
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --host)   MODE=host; shift ;;
     --server) MODE=client; SERVER="${2:-}"; shift 2 ;;
     --port)   PORT="${2:-}"; shift 2 ;;
-    *) echo "usage: install.sh [--host | --server <url>] [--port N]" >&2; exit 1 ;;
+    # For a machine with no root, where Tailscale can only run in userspace-networking mode
+    # and the OS therefore has no route to the tailnet. See src/shared/proxy.ts.
+    --proxy)  PROXY="${2:-}"; shift 2 ;;
+    *) echo "usage: install.sh [--host | --server <url>] [--port N] [--proxy http://127.0.0.1:1055]" >&2; exit 1 ;;
   esac
 done
 [ -n "$MODE" ] || { echo "achat: pass --host (run the daemon here) or --server <url> (join one)" >&2; exit 1; }
@@ -127,9 +131,9 @@ if [ "$MODE" = host ]; then
   say "this machine will host achat at $SERVER (bound to $BIND, tailnet only)"
 else
   [ -n "$SERVER" ] || die "--server needs a URL"
-  say "joining achat at $SERVER"
-  curl -fsS -m 5 "$SERVER/health" >/dev/null 2>&1 \
-    || die "cannot reach $SERVER — is the daemon running there, and is this machine on the same tailnet?"
+  say "joining achat at $SERVER${PROXY:+ (through proxy $PROXY)}"
+  curl -fsS -m 8 ${PROXY:+--proxy "$PROXY"} "$SERVER/health" >/dev/null 2>&1 \
+    || die "cannot reach $SERVER${PROXY:+ through $PROXY} — is the daemon running there, and is this machine on the tailnet?"
 fi
 
 # ---- host: run the daemon under the OS supervisor ---------------------------
@@ -199,7 +203,9 @@ fi
 
 say "registering the achat MCP server with Claude Code (user scope)"
 claude mcp remove achat --scope user >/dev/null 2>&1 || true
-claude mcp add achat --scope user --env "ACHAT_SERVER=$SERVER" -- "$NODE" "$APP/src/mcp/server.ts"
+claude mcp add achat --scope user \
+  --env "ACHAT_SERVER=$SERVER" ${PROXY:+--env "ACHAT_PROXY=$PROXY"} \
+  -- "$NODE" "$APP/src/mcp/server.ts"
 
 # ---- teach every window the announce loop -----------------------------------
 
