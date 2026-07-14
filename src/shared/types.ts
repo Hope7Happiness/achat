@@ -22,6 +22,16 @@ export interface Message {
   toName: string; // recipient username snapshot at send time
   body: string;
   createdAt: number; // epoch ms
+  // An attachment is a property of the message, not a separate kind of event: it flows down
+  // the same WebSocket, lands in the same history, and counts toward the same unread badge.
+  file?: Attachment;
+}
+
+export interface Attachment {
+  id: string;
+  name: string;
+  size: number;
+  sha256: string; // so the recipient can verify what it got is what was sent
 }
 
 // POST /identities  (start / rename) — authenticated by the session secret in the body

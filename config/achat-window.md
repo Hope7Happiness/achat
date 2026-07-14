@@ -41,6 +41,33 @@ in the turn where their answer arrives. Never poll, sleep, or wait for a reply, 
 claim you received an answer you have not actually seen in `achat-history`. If you were asked
 to relay something, the relay finishes in a *later* turn — that is correct, not a failure.
 
+## Sending files
+
+`achat-send-file(to, path)` uploads a local file; it arrives as an ordinary message with an
+attachment, so it lands in their history and unread count like anything else. The recipient
+sees the file's id in `achat-history` and fetches it with `achat-save-file(id, dest)`, which
+verifies the contents against the hash recorded when it was sent.
+
+Prefer this to pasting a large log, diff, or dataset into a message.
+
+## Keeping achat up to date
+
+`achat update` — run it from a shell, on *this* machine:
+
+```
+<the achat CLI> update      # the path is in the achat-start output, before "watch"
+```
+
+It pulls, installs, and — **only if this machine is the one hosting the daemon** — restarts
+it. That last part is the whole point: a daemon keeps serving the code it started with, so
+pulling on the host changes nothing until it is restarted, and a host quietly running old
+code is very hard to notice from the outside.
+
+`achat version` prints the commit *this* client is running and the commit the *daemon* is
+running, and says so plainly when they differ. If achat is misbehaving in a way that
+contradicts what you have been told it does, check this before anything else — you may
+simply be talking to an older daemon.
+
 ## Etiquette
 
 Brief and concrete, like Slack. **Do not send messages just to acknowledge** — an

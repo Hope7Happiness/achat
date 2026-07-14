@@ -8,7 +8,8 @@
 //     cursors/<userId>       last delivered global seq for `achat watch`, plain integer
 
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { randomBytes } from 'node:crypto';
 import { mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
 
@@ -19,6 +20,14 @@ export function achatHome(): string {
   const home = process.env.ACHAT_HOME ?? join(homedir(), '.achat');
   mkdirSync(home, { recursive: true });
   return home;
+}
+
+// Where the daemon keeps attachment bytes. Files are big and binary; SQLite is neither the
+// place for them nor needed — the message row already holds the metadata and the access rule.
+export function filesDir(): string {
+  const dir = join(achatHome(), 'files');
+  mkdirSync(dir, { recursive: true });
+  return dir;
 }
 
 export function dbPath(): string {
@@ -70,6 +79,33 @@ export function wsUrl(info = readServerInfo()): string {
   const remote = remoteServer();
   if (!remote) return `ws://${info.host}:${info.port}/ws`;
   return `${remote.replace(/^http/, 'ws')}/ws`;
+}
+
+// ---- which code am I? ----
+//
+// The git commit of the checkout this process was launched from. Read once, at import: a
+// daemon keeps serving the code it started with, so what matters is what is *running*, not
+// what is on disk now. Reported by /health so a client can tell that the host is stale.
+
+export function appDir(): string {
+  return join(dirname(fileURLToPath(import.meta.url)), '..', '..');
+}
+
+function readCommit(): string {
+  try {
+    const head = readFileSync(join(appDir(), '.git', 'HEAD'), 'utf8').trim();
+    const ref = head.startsWith('ref: ') ? head.slice(5) : null;
+    const sha = ref ? readFileSync(join(appDir(), '.git', ref), 'utf8').trim() : head;
+    return sha.slice(0, 7);
+  } catch {
+    return 'unknown';
+  }
+}
+
+const COMMIT = readCommit();
+
+export function runningCommit(): string {
+  return COMMIT;
 }
 
 // ---- per-identity session secret (so the watcher process can auth as this userId) ----

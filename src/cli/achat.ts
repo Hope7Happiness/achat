@@ -2,9 +2,13 @@
 // achat CLI. The acting identity is a session secret, resolved from (in order):
 //   --session <secret> | --user <userId> (reads the stored secret) | $ACHAT_SESSION
 //
+//   version                                       what code am I running, and what code is the daemon running?
+//   update                                        pull + install, and restart the daemon if this machine hosts it
 //   serve   [--host H] [--port P]                 run the daemon
 //   start   [--session S] <username>              register / rename (prints userId; makes a secret if none)
 //   send    --session S --to B <body...>          send a message
+//   send-file --session S --to B <path> [--note]  send a file (arrives as a message with an attachment)
+//   get-file  --session S <fileId> [--dest path]  download a file someone sent you (hash-verified)
 //   list                                          roster + presence
 //   history --session S --with B [--limit N]      print a conversation (does NOT mark read)
 //   unread  --session S                           unread counts by sender (no bodies)
@@ -17,10 +21,14 @@
 //   forget  <username|userId>                     delete an identity this machine owns
 //   prune                                         delete every offline identity this machine owns
 
+import { spawnSync } from 'node:child_process';
+import { homedir } from 'node:os';
+import { existsSync } from 'node:fs';
+import { join, dirname } from 'node:path';
 import { startServer } from '../server/server.ts';
 import * as client from '../client/client.ts';
 import { generateSecret, deriveUserId } from '../shared/identity.ts';
-import { dbPath, writeServerInfo, readCursor, writeCursor, readSessionSecret, DEFAULT_HOST, DEFAULT_PORT } from '../shared/paths.ts';
+import { dbPath, writeServerInfo, readCursor, writeCursor, readSessionSecret, runningCommit, appDir, baseUrl, DEFAULT_HOST, DEFAULT_PORT } from '../shared/paths.ts';
 import type { Message } from '../shared/types.ts';
 
 function parseFlags(args: string[]): { flags: Record<string, string>; positional: string[] } {
@@ -58,7 +66,80 @@ function requireSession(flags: Record<string, string>): string {
 }
 
 function fmt(m: Message): string {
-  return `[${new Date(m.createdAt).toLocaleTimeString()}] ${m.fromName} → ${m.toName}: ${m.body}`;
+  const line = `[${new Date(m.createdAt).toLocaleTimeString()}] ${m.fromName} → ${m.toName}: ${m.body}`;
+  return m.file ? `${line}\n    \u{1F4CE} ${m.file.name} (${m.file.size} bytes)  id=${m.file.id}` : line;
+}
+
+// What code am I running, and what code is the daemon running? These drift: a daemon keeps
+// serving whatever it started with, so `git pull` on the host changes nothing until it is
+// restarted — and we lost time more than once to a host that was quietly stale.
+async function cmdVersion(): Promise<void> {
+  const local = runningCommit();
+  process.stdout.write(`client   ${local}  (${appDir()})\n`);
+  try {
+    const h = await client.serverHealth();
+    const stale = h.commit !== 'unknown' && local !== 'unknown' && h.commit !== local;
+    process.stdout.write(`daemon   ${h.commit}  (${baseUrl()})${stale ? '   ← different code than this client' : ''}\n`);
+    if (stale) process.stdout.write(`\nRun \`achat update\` on the daemon's machine to bring it up to date.\n`);
+  } catch (err) {
+    process.stdout.write(`daemon   unreachable (${(err as Error).message})\n`);
+  }
+}
+
+// Update this machine's achat, whatever role it plays. Pull, install, and — if a daemon is
+// supervised here — restart it, because otherwise the new code sits on disk doing nothing.
+async function cmdUpdate(): Promise<void> {
+  const dir = appDir();
+  const before = runningCommit();
+  const run = (cmd: string, args: string[]): string => {
+    const r = spawnSync(cmd, args, { cwd: dir, encoding: 'utf8' });
+    if (r.status !== 0) throw new Error(`${cmd} ${args.join(' ')} failed: ${(r.stderr || r.stdout || '').trim()}`);
+    return (r.stdout ?? '').trim();
+  };
+
+  process.stdout.write(`updating ${dir} (currently ${before})\n`);
+  run('git', ['pull', '--ff-only', '--quiet']);
+  const after = readCommitFresh(dir);
+  if (after === before) {
+    process.stdout.write(`already up to date (${before})\n`);
+  } else {
+    process.stdout.write(`${before} → ${after}\n`);
+  }
+  // Dependencies can change with the code; installing when nothing moved is cheap and safe.
+  // Drive npm with *this* node — the machine's `node` on PATH may be an ancient one (that is
+  // why the installer ships a private Node at all), and npm on PATH belongs to it.
+  const bundledNpm = join(dirname(process.execPath), '..', 'lib', 'node_modules', 'npm', 'bin', 'npm-cli.js');
+  if (existsSync(bundledNpm)) run(process.execPath, [bundledNpm, 'install', '--silent', '--omit=dev']);
+  else run('npm', ['install', '--silent', '--omit=dev']);
+
+  const restarted = restartLocalDaemon();
+  process.stdout.write(
+    restarted
+      ? `restarted the local daemon (${restarted}) — it is now running ${after}\n`
+      : `no daemon supervised on this machine; new code takes effect when the MCP server restarts (open a new window)\n`,
+  );
+}
+
+// Returns how it was restarted, or null if this machine does not host the daemon.
+function restartLocalDaemon(): string | null {
+  const mac = spawnSync('launchctl', ['list', 'com.achat.daemon'], { encoding: 'utf8' });
+  if (mac.status === 0) {
+    const plist = join(homedir(), 'Library', 'LaunchAgents', 'com.achat.daemon.plist');
+    spawnSync('launchctl', ['unload', plist]);
+    spawnSync('launchctl', ['load', plist]);
+    return 'launchd';
+  }
+  const unit = spawnSync('systemctl', ['--user', 'is-enabled', 'achat.service'], { encoding: 'utf8' });
+  if (unit.status === 0) {
+    const r = spawnSync('systemctl', ['--user', 'restart', 'achat.service'], { encoding: 'utf8' });
+    if (r.status === 0) return 'systemd';
+  }
+  return null;
+}
+
+function readCommitFresh(dir: string): string {
+  const r = spawnSync('git', ['rev-parse', '--short=7', 'HEAD'], { cwd: dir, encoding: 'utf8' });
+  return r.status === 0 ? r.stdout.trim() : 'unknown';
 }
 
 async function cmdServe(flags: Record<string, string>): Promise<void> {
@@ -91,6 +172,23 @@ async function cmdSend(flags: Record<string, string>, positional: string[]): Pro
   if (!to || !body) throw new Error('usage: achat send --session S --to B <body>');
   const out = await client.send(session, to, body);
   process.stdout.write(`sent (delivered=${out.delivered})\n`);
+}
+
+async function cmdSendFile(flags: Record<string, string>, positional: string[]): Promise<void> {
+  const session = requireSession(flags);
+  const to = flags.to;
+  const path = positional[0];
+  if (!to || !path) throw new Error('usage: achat send-file --session S --to B <path> [--note "..."]');
+  const out = await client.sendFile(session, to, path, flags.note);
+  process.stdout.write(`sent ${out.message.file?.name} (${out.message.file?.size} bytes, delivered=${out.delivered})\n`);
+}
+
+async function cmdGetFile(flags: Record<string, string>, positional: string[]): Promise<void> {
+  const session = requireSession(flags);
+  const id = positional[0];
+  if (!id) throw new Error('usage: achat get-file --session S <fileId> [--dest path]');
+  const out = await client.saveFile(session, id, flags.dest);
+  process.stdout.write(`saved ${out.size} bytes to ${out.path}\n`);
 }
 
 async function cmdList(): Promise<void> {
@@ -247,9 +345,13 @@ async function main(): Promise<void> {
   const [, , cmd, ...rest] = process.argv;
   const { flags, positional } = parseFlags(rest);
   switch (cmd) {
+    case 'version': return cmdVersion();
+    case 'update': return cmdUpdate();
     case 'serve': return cmdServe(flags);
     case 'start': return cmdStart(flags, positional);
     case 'send': return cmdSend(flags, positional);
+    case 'send-file': return cmdSendFile(flags, positional);
+    case 'get-file': return cmdGetFile(flags, positional);
     case 'list': return cmdList();
     case 'history': return cmdHistory(flags);
     case 'unread': return cmdUnread(flags);
@@ -259,7 +361,7 @@ async function main(): Promise<void> {
     case 'forget': return cmdForget(flags, positional);
     case 'prune': return cmdPrune();
     default:
-      process.stderr.write('usage: achat <serve|start|send|list|history|unread|read|receipt|watch|forget|prune> ...\n');
+      process.stderr.write('usage: achat <version|update|serve|start|send|send-file|get-file|list|history|unread|read|receipt|watch|forget|prune> ...\n');
       process.exit(1);
   }
 }

@@ -94,6 +94,37 @@ content. Reading is **non-destructive**: unread counts change only when you expl
 | `achat-unread()` | Unread counts by sender — no bodies, no state change |
 | `achat-mark-read(with)` | Clear the unread count for a conversation |
 | `achat-receipt(with)` | Has *they* read what *you* sent? Pull-only; nobody is notified |
+| `achat-send-file(to, path, note?)` | Send a file; it arrives as a message with an attachment |
+| `achat-save-file(id, dest?)` | Download a file sent to you, verified against its hash |
+
+### Files
+
+An attachment is a **property of a message**, not a separate kind of event. It rides the same
+WebSocket, lands in the same history, and counts toward the same unread badge — so a
+recipient hears about a file exactly the way it hears about anything else, and nothing
+downstream needed a new code path.
+
+That also settles access control without inventing anything: **the message is the permission**.
+You may fetch a file exactly when a message carrying it was sent by you or to you, so there
+is no second notion of who-owns-what to keep in sync. Bytes live on the host under
+`~/.achat/files` (never in SQLite), capped by `ACHAT_MAX_FILE` (default 32mb) — the daemon
+holds every file anyone ever sent, and an unbounded upload is an unbounded disk.
+
+Downloads are verified against the SHA-256 recorded at send time. A file that arrives
+corrupted fails loudly rather than sitting on disk looking fine.
+
+## Updating
+
+```bash
+achat version   # the commit this client runs, and the commit the daemon runs
+achat update    # pull + install, and restart the daemon if this machine hosts it
+```
+
+Run `achat update` on whichever machine you are on; it works out its own role. The restart is
+the part that matters: **a daemon keeps serving the code it started with**, so pulling on the
+host changes nothing until it is restarted — and a host quietly running old code is very hard
+to notice from the outside. That is why `/health` reports the daemon's *running* commit and
+`achat version` says plainly when it differs from yours.
 
 ### Read receipts
 

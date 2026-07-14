@@ -1,12 +1,13 @@
 // SQLite storage for the achat daemon. Uses Node's built-in node:sqlite (no native build).
 //
 // Identity: user_id (hash of a session secret) is the stable PK. username is a unique,
-// mutable label. A username currently held by an OFFLINE identity can be taken over by a
-// new one (dead sessions shouldn't squat names); an ONLINE holder blocks it.
+// mutable label owned by the MACHINE that claimed it: a new session there may reclaim a name
+// its own dead session left behind, and a session on any other machine never may. See
+// register() for why both halves of that are necessary.
 
 import { DatabaseSync } from 'node:sqlite';
 import { randomUUID } from 'node:crypto';
-import type { Identity, Message } from '../shared/types.ts';
+import type { Attachment, Identity, Message } from '../shared/types.ts';
 
 export class UsernameTakenError extends Error {
   constructor(username: string) {
@@ -64,6 +65,23 @@ export class Db {
     if (!readCols.some((c) => c.name === 'read_at')) {
       this.db.exec('ALTER TABLE read_state ADD COLUMN read_at INTEGER');
     }
+    // Attachments live on the message row, not in a table of their own. The bytes are on
+    // disk; this is the metadata, denormalised like from_name so history stays
+    // self-contained. It also *is* the access-control record: you may fetch a file exactly
+    // when a message carrying it was sent by you or to you, so there is no second notion of
+    // who owns what to keep in sync.
+    const msgCols = this.db.prepare('PRAGMA table_info(messages)').all() as { name: string }[];
+    for (const [col, type] of [
+      ['file_id', 'TEXT'],
+      ['file_name', 'TEXT'],
+      ['file_size', 'INTEGER'],
+      ['file_sha256', 'TEXT'],
+    ]) {
+      if (!msgCols.some((c) => c.name === col)) {
+        this.db.exec(`ALTER TABLE messages ADD COLUMN ${col} ${type}`);
+      }
+    }
+    this.db.exec('CREATE INDEX IF NOT EXISTS idx_messages_file ON messages (file_id)');
   }
 
   private nextSeq(): number {
@@ -194,15 +212,46 @@ export class Db {
     toName: string,
     body: string,
     now: number,
+    file?: Attachment,
   ): Message {
     const seq = this.nextSeq();
     const id = randomUUID();
     this.db
       .prepare(
-        'INSERT INTO messages (id, seq, from_id, from_name, to_id, to_name, body, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+        `INSERT INTO messages
+           (id, seq, from_id, from_name, to_id, to_name, body, created_at, file_id, file_name, file_size, file_sha256)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
-      .run(id, seq, fromId, fromName, toId, toName, body, now);
-    return { id, seq, fromId, fromName, toId, toName, body, createdAt: now };
+      .run(
+        id,
+        seq,
+        fromId,
+        fromName,
+        toId,
+        toName,
+        body,
+        now,
+        file?.id ?? null,
+        file?.name ?? null,
+        file?.size ?? null,
+        file?.sha256 ?? null,
+      );
+    return { id, seq, fromId, fromName, toId, toName, body, createdAt: now, ...(file ? { file } : {}) };
+  }
+
+  // May `userId` fetch this file? Exactly when a message carrying it was sent by them or to
+  // them — the message is the access-control record, so there is nothing else to keep in sync.
+  fileFor(fileId: string, userId: string): Attachment | null {
+    const row = this.db
+      .prepare(
+        `SELECT file_name, file_size, file_sha256 FROM messages
+         WHERE file_id = ? AND (from_id = ? OR to_id = ?) LIMIT 1`,
+      )
+      .get(fileId, userId, userId) as
+      | { file_name: string; file_size: number; file_sha256: string }
+      | undefined;
+    if (!row) return null;
+    return { id: fileId, name: row.file_name, size: row.file_size, sha256: row.file_sha256 };
   }
 
   // Messages addressed TO `userId` with seq greater than `since` (the inbox / unread feed).
@@ -318,10 +367,14 @@ interface RawMessage {
   to_name: string;
   body: string;
   created_at: number;
+  file_id: string | null;
+  file_name: string | null;
+  file_size: number | null;
+  file_sha256: string | null;
 }
 
 function toMessage(r: RawMessage): Message {
-  return {
+  const message: Message = {
     id: r.id,
     seq: r.seq,
     fromId: r.from_id,
@@ -331,4 +384,13 @@ function toMessage(r: RawMessage): Message {
     body: r.body,
     createdAt: r.created_at,
   };
+  if (r.file_id) {
+    message.file = {
+      id: r.file_id,
+      name: r.file_name ?? 'file',
+      size: r.file_size ?? 0,
+      sha256: r.file_sha256 ?? '',
+    };
+  }
+  return message;
 }

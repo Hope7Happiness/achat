@@ -2,7 +2,7 @@
 // register as alice/bob, exchange a message, and read it back via tools.
 // Run: node scripts/mcp-smoke.ts
 
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -45,7 +45,9 @@ try {
     'achat-list',
     'achat-mark-read',
     'achat-receipt',
+    'achat-save-file',
     'achat-send',
+    'achat-send-file',
     'achat-start',
     'achat-unread',
   ];
@@ -85,6 +87,26 @@ try {
 
   const afterRead = await bob.callTool({ name: 'achat-receipt', arguments: { with: 'alice' } });
   check(/has read all 1/.test(textOf(afterRead)), 'achat-receipt: bob now sees alice read his message');
+
+  // File transfer, over the real MCP layer. The point is the round trip: the id an agent can
+  // actually see in its history has to be the id that fetches the bytes.
+  const src = join(home, 'report.bin');
+  const payload = Buffer.from('\x00\x01\x02 not-utf8 \xff\xfe report');
+  writeFileSync(src, payload);
+
+  const sent = await bob.callTool({ name: 'achat-send-file', arguments: { to: 'alice', path: src } });
+  check(/Sent report\.bin/.test(textOf(sent)), 'achat-send-file uploads and sends');
+
+  const histWithFile = textOf(await alice.callTool({ name: 'achat-history', arguments: { with: 'bob' } }));
+  const fileId = /achat-save-file id="([^"]+)"/.exec(histWithFile)?.[1];
+  check(!!fileId, 'the attachment (and its id) is visible in achat-history');
+
+  const saved = await alice.callTool({
+    name: 'achat-save-file',
+    arguments: { id: fileId, dest: join(home, 'got.bin') },
+  });
+  check(/Saved \d+ bytes/.test(textOf(saved)), 'achat-save-file writes it to disk');
+  check(readFileSync(join(home, 'got.bin')).equals(payload), 'the bytes survive the round trip through MCP');
 } finally {
   await alice.close();
   await bob.close();

@@ -3,7 +3,7 @@
 // explicit mark-read, presence, username ownership, and rename-keeps-history.
 // Run: node scripts/smoke.ts
 
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -120,6 +120,34 @@ try {
     carolAfterPeek.unreadByThem === 1,
     'alice reading the history does not flip carol’s receipt (only mark-read does)',
   );
+
+  // 5c. File transfer.
+  const payload = Buffer.from('binary\x00\xff\xfe payload — not valid utf8 if mishandled');
+  const srcPath = join(process.env.ACHAT_HOME!, 'outgoing.bin');
+  writeFileSync(srcPath, payload);
+
+  const fileMsg = await client.sendFile(bobSecret, 'alice', srcPath, 'here is that dump');
+  check(fileMsg.message.file?.name === 'outgoing.bin', 'the file arrives as a message with an attachment');
+  check(fileMsg.message.body === 'here is that dump', 'the note becomes the message body');
+
+  const bobHistory = await client.history(aliceSecret, 'bob', 50);
+  const withFile = bobHistory.find((m) => m.file);
+  check(!!withFile?.file?.id, 'the attachment shows up in history (a file you cannot see is a file you never got)');
+
+  const dl = await client.saveFile(aliceSecret, withFile!.file!.id, join(process.env.ACHAT_HOME!, 'incoming.bin'));
+  check(
+    readFileSync(dl.path).equals(payload),
+    'the bytes round-trip exactly (binary is not mangled by a utf8 decode somewhere)',
+  );
+
+  // Access control is the message itself: carol was never sent this file.
+  let outsiderBlocked = false;
+  try {
+    await client.saveFile(carolSecret, withFile!.file!.id);
+  } catch {
+    outsiderBlocked = true;
+  }
+  check(outsiderBlocked, 'someone the file was not sent to cannot fetch it');
 
   // 6. Username uniqueness while online
   const w2 = client.watch(aliceSecret, readCursor(aliceId), () => {});

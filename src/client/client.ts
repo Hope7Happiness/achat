@@ -4,7 +4,9 @@
 
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { join, dirname } from 'node:path';
+import { join, dirname, basename, resolve } from 'node:path';
+import { readFileSync, writeFileSync, existsSync, statSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { request as httpRequest } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 import { WebSocket } from 'ws';
@@ -30,7 +32,9 @@ const cliEntry = join(here, '..', 'cli', 'achat.ts');
 interface RawResponse {
   status: number;
   ok: boolean;
-  body: string;
+  body: Buffer;
+  headers: Record<string, string | string[] | undefined>;
+  text(): string;
 }
 
 // One HTTP path for everything, built on node:http rather than fetch — fetch cannot be given
@@ -39,13 +43,14 @@ interface RawResponse {
 // proxied and unproxied cases cannot drift apart.
 function rawRequest(
   url: string,
-  opts: { method?: string; headers?: Record<string, string>; body?: string; timeoutMs?: number } = {},
+  opts: { method?: string; headers?: Record<string, string>; body?: string | Buffer; timeoutMs?: number } = {},
 ): Promise<RawResponse> {
   const target = new URL(url);
   const secure = target.protocol === 'https:';
   const send = secure ? httpsRequest : httpRequest;
   const agent = agentFor(target);
-  const payload = opts.body ? Buffer.from(opts.body, 'utf8') : null;
+  const payload =
+    opts.body === undefined ? null : Buffer.isBuffer(opts.body) ? opts.body : Buffer.from(opts.body, 'utf8');
   const headers = { ...(opts.headers ?? {}) };
   // Be explicit rather than letting node fall back to chunked encoding: body parsers decide
   // whether a request even *has* a body from these headers, and a DELETE that arrives with
@@ -64,12 +69,20 @@ function rawRequest(
         ...(agent ? { agent } : {}),
       },
       (res) => {
-        let data = '';
-        res.setEncoding('utf8');
-        res.on('data', (chunk) => (data += chunk));
+        // Collect bytes, not a string: the same path carries JSON and file downloads, and
+        // decoding a binary body as utf8 would quietly corrupt it.
+        const chunks: Buffer[] = [];
+        res.on('data', (chunk: Buffer) => chunks.push(chunk));
         res.on('end', () => {
           const status = res.statusCode ?? 0;
-          resolve({ status, ok: status >= 200 && status < 300, body: data });
+          const body = Buffer.concat(chunks);
+          resolve({
+            status,
+            ok: status >= 200 && status < 300,
+            body,
+            headers: res.headers,
+            text: () => body.toString('utf8'),
+          });
         });
       },
     );
@@ -88,6 +101,16 @@ async function health(base: string, timeoutMs = 1500): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+function apiError(res: RawResponse): Error {
+  let detail: { error?: string } = {};
+  try {
+    detail = JSON.parse(res.text()) as { error?: string };
+  } catch {
+    /* not JSON */
+  }
+  return new Error(detail.error ?? `HTTP ${res.status}`);
 }
 
 // Ensure a daemon is reachable; spawn a detached one and wait for it if not.
@@ -139,16 +162,8 @@ async function api<T>(
   const headers: Record<string, string> = { 'content-type': 'application/json' };
   if (session) headers['x-achat-session'] = session;
   const res = await rawRequest(`${baseUrl()}${path}`, { ...opts, headers });
-  if (!res.ok) {
-    let detail: { error?: string } = {};
-    try {
-      detail = JSON.parse(res.body) as { error?: string };
-    } catch {
-      /* not JSON */
-    }
-    throw new Error(detail.error ?? `HTTP ${res.status}`);
-  }
-  return JSON.parse(res.body) as T;
+  if (!res.ok) throw apiError(res);
+  return JSON.parse(res.text()) as T;
 }
 
 // Register (or rename). Persists the session secret locally so the watcher can auth as this userId.
@@ -165,6 +180,55 @@ export async function start(session: string, username: string): Promise<StartRes
 export async function send(session: string, to: string, body: string): Promise<SendResponse> {
   await ensureServer();
   return api<SendResponse>('/messages', session, { method: 'POST', body: JSON.stringify({ to, body }) });
+}
+
+// Send a local file. Returns the message that carries it.
+export async function sendFile(
+  session: string,
+  to: string,
+  filePath: string,
+  note?: string,
+): Promise<SendResponse> {
+  await ensureServer();
+  const bytes = readFileSync(filePath);
+  const q = new URLSearchParams({ to, name: basename(filePath), ...(note ? { note } : {}) });
+  const res = await rawRequest(`${baseUrl()}/files?${q}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/octet-stream', 'x-achat-session': session },
+    body: bytes,
+  });
+  if (!res.ok) throw apiError(res);
+  return JSON.parse(res.text()) as SendResponse;
+}
+
+// Download a file to `dest` (a path, or a directory to drop it into under its own name).
+// Verifies the hash: a file that arrives corrupted must fail loudly, not sit on disk looking
+// fine. Returns where it landed.
+export async function saveFile(session: string, fileId: string, dest?: string): Promise<{ path: string; size: number }> {
+  await ensureServer();
+  const res = await rawRequest(`${baseUrl()}/files/${encodeURIComponent(fileId)}`, {
+    headers: { 'x-achat-session': session },
+  });
+  if (!res.ok) throw apiError(res);
+
+  const disposition = String(res.headers['content-disposition'] ?? '');
+  const name = /filename="([^"]+)"/.exec(disposition)?.[1] ?? fileId;
+  const expected = String(res.headers['x-achat-sha256'] ?? '');
+  const actual = createHash('sha256').update(res.body).digest('hex');
+  if (expected && actual !== expected) {
+    throw new Error(`file ${fileId} arrived corrupted (sha256 ${actual} != ${expected})`);
+  }
+
+  const target = dest && existsSync(dest) && statSync(dest).isDirectory() ? join(dest, name) : (dest ?? name);
+  writeFileSync(target, res.body);
+  return { path: resolve(target), size: res.body.length };
+}
+
+// What the daemon reports about itself, including the commit it is actually running.
+export async function serverHealth(): Promise<{ ok: boolean; version: string; commit: string }> {
+  const res = await rawRequest(`${baseUrl()}/health`, { timeoutMs: 8000 });
+  if (!res.ok) throw apiError(res);
+  return JSON.parse(res.text()) as { ok: boolean; version: string; commit: string };
 }
 
 export async function list(): Promise<Identity[]> {

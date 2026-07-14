@@ -8,13 +8,25 @@ import express from 'express';
 import type { Request, Response } from 'express';
 import { createServer, type Server } from 'node:http';
 import { WebSocketServer, WebSocket } from 'ws';
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { createHash, randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { join, dirname } from 'node:path';
+import { join, dirname, basename } from 'node:path';
 import { Db, UsernameTakenError } from './db.ts';
 import { deriveUserId } from '../shared/identity.ts';
+import { filesDir, runningCommit } from '../shared/paths.ts';
 import { WS_PROTOCOL, secretFromProtocols } from '../shared/wire.ts';
-import type { ServerFrame } from '../shared/types.ts';
+import type { Attachment, ServerFrame } from '../shared/types.ts';
+
+// Attachment bytes never touch SQLite. Cap them: the daemon holds every file anyone ever
+// sent, and an unbounded upload is an unbounded disk.
+const MAX_FILE = process.env.ACHAT_MAX_FILE ?? '32mb';
+
+function humanSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
 
 const webIndex = join(dirname(fileURLToPath(import.meta.url)), '..', 'web', 'index.html');
 
@@ -94,7 +106,10 @@ export function startServer(dbFile: string, host: string, port: number): Promise
     return { userId, username };
   };
 
-  app.get('/health', (_req, res) => res.json({ ok: true, version: VERSION }));
+  // The commit the daemon is *running*, not the one checked out — a long-lived daemon keeps
+  // serving the code it started with, and every time that drifted from the repo we could not
+  // see it. `achat version` compares this against the client's.
+  app.get('/health', (_req, res) => res.json({ ok: true, version: VERSION, commit: runningCommit() }));
 
   // Web UI (served same-origin so it reuses the HTTP + WS API directly).
   app.get('/', (_req, res) => {
@@ -173,6 +188,54 @@ export function startServer(dbFile: string, host: string, port: number): Promise
       forgotten.push(id.username ?? id.userId);
     }
     res.json({ forgotten });
+  });
+
+  // Upload a file and send it as a message. Raw bytes in the body.
+  //   x-achat-session, ?to=<username>&name=<filename>[&note=<text>]
+  //
+  // An attachment is a property of the message, not a separate kind of event: it rides the
+  // same WebSocket, lands in the same history, and counts toward the same unread badge. So a
+  // recipient hears about a file exactly the way it hears about anything else, and nothing
+  // downstream needed a new code path.
+  app.post('/files', express.raw({ type: '*/*', limit: MAX_FILE }), (req, res) => {
+    const me = caller(req, res);
+    if (!me) return;
+    const toName = (req.query.to ?? '').toString().trim();
+    const name = basename((req.query.name ?? '').toString().trim() || 'file');
+    const note = (req.query.note ?? '').toString();
+    if (!toName) return res.status(400).json({ error: 'to required' });
+    const toId = db.resolveUsername(toName);
+    if (!toId) return res.status(404).json({ error: `unknown recipient: ${toName}` });
+
+    const bytes = req.body as Buffer;
+    if (!Buffer.isBuffer(bytes) || bytes.length === 0) return res.status(400).json({ error: 'empty file' });
+
+    const file: Attachment = {
+      id: randomUUID(),
+      name,
+      size: bytes.length,
+      sha256: createHash('sha256').update(bytes).digest('hex'),
+    };
+    writeFileSync(join(filesDir(), file.id), bytes);
+
+    const body = note || `sent a file: ${name} (${humanSize(file.size)})`;
+    const message = db.insertMessage(me.userId, me.username, toId, toName, body, now(), file);
+    const delivered = hub.send(toId, { type: 'message', message });
+    res.json({ message, delivered });
+  });
+
+  // Download a file. Authorised by the message that carries it (see Db.fileFor).
+  app.get('/files/:fileId', (req, res) => {
+    const me = caller(req, res);
+    if (!me) return;
+    const file = db.fileFor(req.params.fileId, me.userId);
+    if (!file) return res.status(404).json({ error: 'no such file, or it was not sent to you' });
+    const path = join(filesDir(), file.id);
+    if (!existsSync(path)) return res.status(410).json({ error: 'file bytes are gone from the host' });
+    res.setHeader('content-type', 'application/octet-stream');
+    res.setHeader('content-disposition', `attachment; filename="${file.name.replace(/"/g, '')}"`);
+    res.setHeader('x-achat-sha256', file.sha256);
+    res.send(readFileSync(path));
   });
 
   // Send a pairwise message. Body: { to (username), body }.

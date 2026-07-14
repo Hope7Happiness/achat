@@ -29,7 +29,10 @@ function requireStarted(): void {
 }
 
 function fmt(m: Message): string {
-  return `[${new Date(m.createdAt).toLocaleTimeString()}] ${m.fromName}: ${m.body}`;
+  const line = `[${new Date(m.createdAt).toLocaleTimeString()}] ${m.fromName}: ${m.body}`;
+  // Always render the attachment. A file that does not show up in history is a file the
+  // recipient never learns it has.
+  return m.file ? `${line}\n    \u{1F4CE} ${m.file.name} (${m.file.size} bytes) \u2014 achat-save-file id="${m.file.id}"` : line;
 }
 
 const server = new McpServer({ name: 'achat', version: '0.2.0' });
@@ -110,6 +113,55 @@ server.registerTool(
         },
       ],
     };
+  },
+);
+
+server.registerTool(
+  'achat-send-file',
+  {
+    description:
+      'Send a file to another achat user. The file is uploaded to the daemon and arrives as a ' +
+      'normal message with an attachment, so it shows up in their history and unread count like ' +
+      'anything else. Use this to hand over a log, a diff, a dataset — anything you would rather ' +
+      'not paste. The recipient fetches it with achat-save-file.',
+    inputSchema: {
+      to: z.string().describe('recipient username'),
+      path: z.string().describe('absolute path of the local file to send'),
+      note: z.string().optional().describe('message to send with it (default: "sent a file: <name>")'),
+    },
+  },
+  async ({ to, path, note }) => {
+    requireStarted();
+    const out = await client.sendFile(SESSION, to, path, note);
+    const f = out.message.file;
+    return {
+      content: [
+        {
+          type: 'text',
+          text:
+            `Sent ${f?.name} (${f?.size} bytes) to ${to}` +
+            (out.delivered ? ' (delivered live).' : ' (queued — they are offline).'),
+        },
+      ],
+    };
+  },
+);
+
+server.registerTool(
+  'achat-save-file',
+  {
+    description:
+      'Download a file someone sent you (the id comes from achat-history) and write it to disk. ' +
+      'Its contents are verified against the hash recorded when it was sent.',
+    inputSchema: {
+      id: z.string().describe('the file id shown in achat-history'),
+      dest: z.string().optional().describe('where to write it: a path, or a directory (default: the current directory)'),
+    },
+  },
+  async ({ id, dest }) => {
+    requireStarted();
+    const out = await client.saveFile(SESSION, id, dest);
+    return { content: [{ type: 'text', text: `Saved ${out.size} bytes to ${out.path}` }] };
   },
 );
 
