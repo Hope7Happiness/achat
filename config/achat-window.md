@@ -52,13 +52,12 @@ Prefer this to pasting a large log, diff, or dataset into a message.
 
 ## Keeping achat up to date
 
-`achat update` — run it from a shell, on *this* machine:
-
 ```
-<the achat CLI> update      # the path is in the achat-start output, before "watch"
+achat update      # ~/.local/bin/achat, installed alongside achat itself
+achat version     # what this machine runs, and what the daemon runs
 ```
 
-It pulls, installs, and — **only if this machine is the one hosting the daemon** — restarts
+`achat update` pulls, installs, and — **only if this machine is the one hosting the daemon** — restarts
 it. That last part is the whole point: a daemon keeps serving the code it started with, so
 pulling on the host changes nothing until it is restarted, and a host quietly running old
 code is very hard to notice from the outside.

@@ -115,8 +115,12 @@ corrupted fails loudly rather than sitting on disk looking fine.
 
 ## Updating
 
+The installer puts an `achat` command in `~/.local/bin`. It is a shim, not a symlink: it pins
+the Node that can actually run this code and bakes in `ACHAT_SERVER`/`ACHAT_PROXY`, so you
+never have to reconstruct either.
+
 ```bash
-achat version   # the commit this client runs, and the commit the daemon runs
+achat version   # the commit this machine runs, and the commit the daemon runs
 achat update    # pull + install, and restart the daemon if this machine hosts it
 ```
 
