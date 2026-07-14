@@ -177,7 +177,10 @@ Restart=always
 WantedBy=default.target
 UNIT_EOF
     systemctl --user daemon-reload
-    systemctl --user enable --now achat.service
+    systemctl --user enable achat.service
+    # restart, not `enable --now`: on a re-run the service is already up, and `--now` is a
+    # no-op there — so a re-run would pull new code and then keep serving the old.
+    systemctl --user restart achat.service
     # Without lingering, a --user service dies when you log out of SSH — which is exactly
     # what an always-on host must not do.
     loginctl enable-linger "$USER" >/dev/null 2>&1 \
