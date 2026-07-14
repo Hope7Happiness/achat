@@ -9,7 +9,11 @@
   "scripts": {
     "serve": "node src/cli/achat.ts serve",
     "mcp": "node src/mcp/server.ts",
-    "smoke": "node scripts/smoke.ts"
+    "test": "node scripts/smoke.ts && node scripts/mcp-smoke.ts && node scripts/robustness.ts",
+    "smoke": "node scripts/smoke.ts",
+    "mcp-smoke": "node scripts/mcp-smoke.ts",
+    "robustness": "node scripts/robustness.ts",
+    "demo": "node scripts/agent-demo.ts"
   },
   "engines": {
     "node": ">=24"

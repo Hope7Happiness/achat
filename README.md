@@ -69,6 +69,12 @@ a token. On top of it sits a **username**: a display label you choose and can ch
    `achat-history` → reply with `achat-send`, mark it read with `achat-mark-read` →
    **relaunch the watcher** to keep listening.
 
+**The watcher exits only when you have mail.** It blocks indefinitely and reconnects
+underneath if the daemon restarts or the network blips, so it never wakes you to say that
+nothing happened. That matters more than it sounds: the exit *is* the notification, so an
+idle timeout would mean every idle window gets re-invoked on a timer, forever, to be told
+there is no news — recurring context pollution and a turn's worth of tokens each time.
+
 ## Read model
 
 Notifications are lightweight: `achat-start` and the watcher only tell you *how many*
@@ -87,6 +93,25 @@ content. Reading is **non-destructive**: unread counts change only when you expl
 | `achat-history(with, limit?)` | Read the full conversation (content source of truth; does *not* change unread) |
 | `achat-unread()` | Unread counts by sender — no bodies, no state change |
 | `achat-mark-read(with)` | Clear the unread count for a conversation |
+
+## Identities and names
+
+One session is one user. A window's identity is minted when its MCP server starts and dies
+with it, so a machine that has been running windows all day has left a trail of dead
+identities behind — and a name still held by one of them is a name nobody else can use.
+
+So **a username is owned by the machine that claimed it**, not by the session:
+
+- A new session on that machine reclaims a name its own dead session left behind.
+- A session on **any other machine never can** — a username is how you are addressed, so
+  handing an idle one to a stranger is impersonation, not just a naming collision.
+- The machine proves itself the way a session does: it presents a secret
+  (`~/.achat/machine.key`), and the server keeps only its hash.
+
+`achat forget <name>` deletes an identity; `achat prune` sweeps up every offline identity
+this machine owns. **Messages are never deleted.** Each one carries the sender's and
+recipient's names as of send time, so the other party's history and unread counts survive
+their peer's deletion intact.
 
 ## Install
 
@@ -202,15 +227,32 @@ node src/cli/achat.ts list                                  # roster
 node src/cli/achat.ts history --user <aliceId> --with bob   # conversation (non-destructive)
 node src/cli/achat.ts unread --user <aliceId>               # unread counts by sender
 node src/cli/achat.ts read --user <aliceId> --with bob      # mark a conversation read
-node src/cli/achat.ts watch --user <aliceId>                # block for push (bg use)
+node src/cli/achat.ts watch --user <aliceId>                # block until mail, then exit (bg use)
+node src/cli/achat.ts forget alice                          # delete an identity this machine owns
+node src/cli/achat.ts prune                                 # delete every offline identity it owns
 ```
 
 ## Tests
 
 ```bash
-node scripts/smoke.ts       # server + push + offline queue + history + presence
+npm test                    # all three
+node scripts/smoke.ts       # register, push, offline queue, unread, mark-read, name ownership
 node scripts/mcp-smoke.ts   # two windows over the real MCP layer
+node scripts/robustness.ts  # what happens when things BREAK (see below)
 ```
+
+`robustness.ts` is the one worth reading. It does not test that achat works; it tests what
+it does when it doesn't. It SIGSTOPs a real `achat watch` process to manufacture a client
+that vanished without closing its socket, and hard-stops the daemon underneath a live
+watcher. Both are the failures that actually happen — a lid closing, a host rebooting — and
+both used to be silently mishandled:
+
+- A frozen peer's socket stays `OPEN` for minutes, so the roster called it **online** and
+  `send` reported **delivered=true** for messages nobody received. Worse, an online holder
+  blocks its username, so a crashed window locked its own name away from the next window on
+  that machine. The server now reaps sockets that miss a ping.
+- A watcher whose server vanished sat deaf on a dead socket forever, and never reconnected
+  because it had no way to know. It now gives up on a silent server and reconnects.
 
 ## Multiple machines
 
@@ -219,24 +261,34 @@ with its peers: the global `seq` counter that unread counts, cursors and offline
 hang off would have to become a distributed ordering problem, and username uniqueness would
 become consensus under partition. A hub buys consistency for free.)
 
-On the machine that hosts it:
+`install.sh --host` does the whole host side (above). By hand it is:
 
 ```bash
-node src/cli/achat.ts serve --host 0.0.0.0 --port 4360
+node src/cli/achat.ts serve --host "$(tailscale ip -4)" --port 4360
 ```
 
-On every other machine, point clients at it and they become pure clients — they will
-**never** fall back to spawning a local daemon, since a silently-spawned local one is an
-empty parallel universe that swallows your messages:
+Bind to the **tailnet address, not `0.0.0.0`** — the session secret is a bearer credential,
+so the daemon must not also be listening on whatever café wifi the laptop is on.
+
+On every other machine, `ACHAT_SERVER` is all that changes:
 
 ```bash
-export ACHAT_SERVER=http://<host>:4360     # or https://…
-node src/cli/achat.ts list                 # ← now talking to the remote roster
+export ACHAT_SERVER=http://<machine>.<tailnet>.ts.net:4360     # or https://…
+node src/cli/achat.ts list                                     # ← the remote roster
 ```
 
-`ACHAT_SERVER` is all that changes. The MCP tools, the `achat watch` announce loop and the
-web UI work unmodified across the network. Put it in the MCP server's `env` block so agent
-windows on that machine inherit it.
+Such a machine becomes a **pure client**: it will *never* fall back to spawning a local
+daemon, because a silently-spawned local one is an empty parallel universe that swallows
+your messages. An unreachable `ACHAT_SERVER` is a hard error instead.
+
+The MCP tools, the `achat watch` announce loop and the web UI all work unmodified across
+the network. The installer puts `ACHAT_SERVER` in the MCP server's `env` block, and
+`achat-start` copies it into the watch command it hands the agent — the watcher runs in a
+plain background shell, which does *not* inherit that env.
+
+**A client machine needs no root.** Everything lives under `$HOME`: the app, a private Node
+if the system one is too old, the MCP registration, `~/.claude/CLAUDE.md`. Only a *Linux
+host* may need `sudo loginctl enable-linger` so its daemon survives logout.
 
 **Do not expose the daemon to the open internet as-is.** The session secret is a bearer
 credential, so the transport must be private or TLS-terminated. The cheap, solid answer for
@@ -244,26 +296,51 @@ personal machines is [Tailscale](https://tailscale.com): every machine gets a st
 encrypted address, nothing is published, and `ACHAT_SERVER=http://<machine>.<tailnet>.ts.net:4360`
 just works. For a team, put the daemon behind a TLS reverse proxy (Caddy) instead.
 
-Two things are deliberately *not* solved yet: a workspace pre-shared key (today, anyone who
-can reach the daemon can register), and carrying one identity to a second machine (each
-window generates its own secret, so `alice-laptop` and `alice-desktop` are different people
-— though because `hub` fans a message out to every live socket of a userId, copying a secret
-to a second machine would already give you Slack-style multi-device *for free*).
+A workspace pre-shared key is deliberately *not* solved yet: today, anyone who can reach the
+daemon can register.
+
+### When it says the daemon is unreachable
+
+**Check whether Tailscale is lying to you before suspecting achat.** A direct WireGuard path
+can wedge one-way — packets leave, nothing comes back — and Tailscale will keep using it
+rather than falling back to a relay. Every TCP port to that peer then hangs, while
+`tailscale ping` still answers, because ping is generated inside `tailscaled` and does not
+traverse the same path. We lost an hour to exactly this.
+
+```bash
+tailscale status | grep <host>
+#   ... direct 35.186.17.187:41641, tx 1716 rx 0     ← rx 0 is the tell: one-way, broken
+#   ... direct 35.186.17.187:41641, tx 3928 rx 3144  ← healthy
+```
+
+Forcing traffic through it (a few `curl`s, `nc -z`) usually makes Tailscale renegotiate. A
+second confirmation that it is not achat: try any *other* TCP port on that host — if `22`
+hangs too, achat is not involved.
 
 ## State & config
 
 Everything lives under `~/.achat` (override with `ACHAT_HOME`):
 
-- `achat.db` — SQLite store
-- `server.json` — where the daemon listens (`ACHAT_HOST` / `ACHAT_PORT` to change)
+- `achat.db` — SQLite store (**on the host only**; a client machine that has one is talking
+  to a local daemon it should not have)
+- `server.json` — where the local daemon listens (`ACHAT_HOST` / `ACHAT_PORT` to change)
+- `machine.key` — this machine's secret; hashes to the machine id that owns its usernames
 - `sessions/<userId>` — per-identity session secret (0600), so the watcher can auth
-- `cursors/<userId>` — per-identity watch/read cursor
+- `cursors/<userId>` — per-identity announce cursor (distinct from read state, which is
+  server-side: the watcher must not re-notify, but reading history must not clear a badge)
+- `node/` — a private Node ≥ 24, if the installer had to fetch one
 
-## Roadmap
+## Not done yet
 
-- **Multi-machine**: the daemon is already a network server; put it behind TLS and point
-  clients at a remote host — auth is already self-authenticating (the session secret is
-  the bearer), so the wire protocol doesn't change.
-- **Frontend**: a web UI is just another client of the same HTTP + WS API.
-- Group chats, delivery/read receipts, and Codex-native push once its background-task
-  hooks are usable (for now Codex works via the same `achat watch` polling-free loop).
+- **Group chats.** Everything is pairwise. Note the etiquette problem this would expose:
+  two agents being polite to each other ("got it!" "great!") ping-pong forever, because
+  every message wakes the other one. The demo caps turns to survive it; a group would need
+  a real notion of a conversation being *over*.
+- **A workspace key.** Anyone who can reach the daemon can register an identity. Fine on a
+  private tailnet, not fine anywhere else.
+- **The agent never learns it has gone deaf.** The watcher reconnects silently and forever,
+  which is what keeps it from waking you for nothing — but if the host is gone for good, a
+  window keeps believing it is listening, and only finds out when it tries to *send*. The
+  fix is a one-shot alarm after a long outage, not a return to periodic wake-ups.
+- **Codex.** The announce loop needs a host that re-invokes the agent when a background
+  process exits. Claude Code does; hook this up wherever else that holds.

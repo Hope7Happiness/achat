@@ -225,16 +225,6 @@ export function startServer(dbFile: string, host: string, port: number): Promise
     res.json(db.unreadSummary(me.userId));
   });
 
-  // Unread feed: messages addressed to caller with seq > since. Non-blocking.
-  app.get('/inbox', (req, res) => {
-    const me = caller(req, res);
-    if (!me) return;
-    const since = Number(req.query.since ?? 0) || 0;
-    const messages = db.messagesForSince(me.userId, since);
-    const cursor = messages.length ? messages[messages.length - 1].seq : since;
-    res.json({ messages, cursor });
-  });
-
   const httpServer = createServer(app);
   const wss = new WebSocketServer({
     server: httpServer,

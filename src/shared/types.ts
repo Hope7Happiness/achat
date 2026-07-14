@@ -54,12 +54,6 @@ export interface HistoryResponse {
   messages: Message[];
 }
 
-// GET /inbox?since=
-export interface InboxResponse {
-  messages: Message[];
-  cursor: number; // max seq in this batch (or the passed-in since if empty)
-}
-
 // WebSocket frames pushed from server -> client on /ws
 export type ServerFrame =
   | { type: 'hello'; userId: string; username: string }

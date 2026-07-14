@@ -133,12 +133,6 @@ export async function history(session: string, other: string, limit = 50): Promi
   return (await api<{ messages: Message[] }>(`/messages?${q}`, session)).messages;
 }
 
-export async function inbox(session: string, since: number): Promise<{ messages: Message[]; cursor: number }> {
-  await ensureServer();
-  const q = new URLSearchParams({ since: String(since) });
-  return api<{ messages: Message[]; cursor: number }>(`/inbox?${q}`, session);
-}
-
 export interface UnreadSummary {
   total: number;
   bySender: { username: string; count: number }[];
