@@ -257,6 +257,47 @@ else
   { printf '\n%s\n' "$BEGIN"; cat "$APP/config/achat-window.md"; printf '%s\n' "$END"; } >> "$MEM"
 fi
 
+# ---- keep every window reachable: a Stop hook that won't let it go idle deaf ----------
+#
+# A window only *receives* an achat message by being woken into a turn, and only a background
+# task the window itself started — the `achat watch` process — can wake it. That watcher
+# exits every time it delivers mail and must be relaunched; if the agent ever finishes a turn
+# with no watcher running, the window goes permanently deaf and silently stops receiving. A
+# hook cannot start the watcher for the agent (a hook-spawned process is not harness-tracked,
+# so its exit would not wake the agent), but a Stop hook CAN refuse to let the window go idle
+# without one — turning "the agent must remember to relaunch" into "the harness won't let it
+# forget". The command points at the in-repo script so `achat update`'s git pull refreshes it.
+HOOK="$APP/config/hooks/achat-watch-guard.sh"
+chmod +x "$HOOK" 2>/dev/null || true
+SETTINGS="$HOME/.claude/settings.json"
+mkdir -p "$(dirname "$SETTINGS")"
+"$NODE" -e '
+  const fs = require("fs");
+  const [file, cmd] = process.argv.slice(1);
+  let cfg = {};
+  if (fs.existsSync(file)) {
+    const raw = fs.readFileSync(file, "utf8").trim();
+    if (raw) {
+      try { cfg = JSON.parse(raw); }
+      catch (e) {
+        // Never clobber a settings file we cannot parse — a broken merge would be far worse
+        // than a missing hook. Tell the user to add it by hand and move on.
+        console.error("achat: " + file + " is not valid JSON; skipping the watch-guard hook. Add it manually under hooks.Stop.");
+        process.exit(0);
+      }
+    }
+  }
+  cfg.hooks = cfg.hooks || {};
+  cfg.hooks.Stop = cfg.hooks.Stop || [];
+  if (JSON.stringify(cfg.hooks.Stop).includes(cmd)) {
+    console.log("achat: watch-guard Stop hook already present");
+  } else {
+    cfg.hooks.Stop.push({ hooks: [{ type: "command", command: cmd }] });
+    fs.writeFileSync(file, JSON.stringify(cfg, null, 2) + "\n");
+    console.log("achat: installed the watch-guard Stop hook (takes effect in new/resumed windows)");
+  }
+' "$SETTINGS" "$HOOK"
+
 cat <<DONE
 
   achat is installed.
