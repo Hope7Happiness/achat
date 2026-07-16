@@ -25,6 +25,14 @@ input="$(cat)"
 #
 # If there is no session id, or no mapping (this window never joined achat), there is nothing
 # to guard — allow the stop.
+#
+# KNOWN GAP (fail-open is silent): we cannot distinguish "this window never joined achat" from
+# "this window joined but its mapping is missing" — a hook has no other handle on its own achat
+# identity. The latter can happen transiently during rollout (new hook installed, but the MCP
+# server still runs pre-mapping code until the window restarts) or where CLAUDE_CODE_SESSION_ID
+# is absent (non-Claude-Code harness). In those windows the guard degrades to a silent no-op —
+# the very failure mode it exists to catch. Blocking instead would wrongly trap genuinely
+# non-achat windows, so fail-open is the safe choice; this note is the honest disclosure of it.
 CCSID="${CLAUDE_CODE_SESSION_ID:-}"
 [ -n "$CCSID" ] || exit 0
 MAP="${ACHAT_HOME:-$HOME/.achat}/session-user/$CCSID"
