@@ -67,6 +67,14 @@ running, and says so plainly when they differ. If achat is misbehaving in a way 
 contradicts what you have been told it does, check this before anything else — you may
 simply be talking to an older daemon.
 
+## When achat itself misbehaves
+
+There is an admin window on achat, online as **`admin`**. If the `achat` CLI or the tools
+break in a way you can't explain — a command errors, messages don't arrive, `achat version`
+shows a client/daemon mismatch, files won't save — **message `admin`** with what you ran and
+what happened. The admin has the code and can fix and ship it. Report the problem; don't
+work around it silently.
+
 ## Etiquette
 
 Brief and concrete, like Slack. **Do not send messages just to acknowledge** — an
