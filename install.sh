@@ -235,68 +235,15 @@ claude mcp add achat --scope user \
   --env "ACHAT_SERVER=$SERVER" ${PROXY:+--env "ACHAT_PROXY=$PROXY"} \
   -- "$NODE" "$APP/src/mcp/server.ts"
 
-# ---- teach every window the announce loop -----------------------------------
-
-# The tools alone are not enough: a window has to know to come online, and to keep a
-# background watcher running so that an incoming message can wake it. That is exactly what
-# config/achat-agent.md says, so we drop it in as a user-level memory that every session
-# loads, regardless of which project the window is opened in.
-MEM="$HOME/.claude/CLAUDE.md"
-mkdir -p "$(dirname "$MEM")"
-BEGIN="<!-- achat:begin -->"
-END="<!-- achat:end -->"
-if [ -f "$MEM" ] && grep -qF "$BEGIN" "$MEM"; then
-  "$NODE" -e '
-    const fs=require("fs");
-    const [file,begin,end,body]=process.argv.slice(1);
-    const cur=fs.readFileSync(file,"utf8");
-    const re=new RegExp(begin.replace(/[.*+?^${}()|[\]\\]/g,"\\$&")+"[\\s\\S]*?"+end.replace(/[.*+?^${}()|[\]\\]/g,"\\$&"));
-    fs.writeFileSync(file,cur.replace(re,begin+"\n"+body+"\n"+end));
-  ' "$MEM" "$BEGIN" "$END" "$(cat "$APP/config/achat-window.md")"
-else
-  { printf '\n%s\n' "$BEGIN"; cat "$APP/config/achat-window.md"; printf '%s\n' "$END"; } >> "$MEM"
-fi
-
-# ---- keep every window reachable: a Stop hook that won't let it go idle deaf ----------
+# ---- apply per-window Claude Code config -------------------------------------
 #
-# A window only *receives* an achat message by being woken into a turn, and only a background
-# task the window itself started — the `achat watch` process — can wake it. That watcher
-# exits every time it delivers mail and must be relaunched; if the agent ever finishes a turn
-# with no watcher running, the window goes permanently deaf and silently stops receiving. A
-# hook cannot start the watcher for the agent (a hook-spawned process is not harness-tracked,
-# so its exit would not wake the agent), but a Stop hook CAN refuse to let the window go idle
-# without one — turning "the agent must remember to relaunch" into "the harness won't let it
-# forget". The command points at the in-repo script so `achat update`'s git pull refreshes it.
-HOOK="$APP/config/hooks/achat-watch-guard.sh"
-chmod +x "$HOOK" 2>/dev/null || true
-SETTINGS="$HOME/.claude/settings.json"
-mkdir -p "$(dirname "$SETTINGS")"
-"$NODE" -e '
-  const fs = require("fs");
-  const [file, cmd] = process.argv.slice(1);
-  let cfg = {};
-  if (fs.existsSync(file)) {
-    const raw = fs.readFileSync(file, "utf8").trim();
-    if (raw) {
-      try { cfg = JSON.parse(raw); }
-      catch (e) {
-        // Never clobber a settings file we cannot parse — a broken merge would be far worse
-        // than a missing hook. Tell the user to add it by hand and move on.
-        console.error("achat: " + file + " is not valid JSON; skipping the watch-guard hook. Add it manually under hooks.Stop.");
-        process.exit(0);
-      }
-    }
-  }
-  cfg.hooks = cfg.hooks || {};
-  cfg.hooks.Stop = cfg.hooks.Stop || [];
-  if (JSON.stringify(cfg.hooks.Stop).includes(cmd)) {
-    console.log("achat: watch-guard Stop hook already present");
-  } else {
-    cfg.hooks.Stop.push({ hooks: [{ type: "command", command: cmd }] });
-    fs.writeFileSync(file, JSON.stringify(cfg, null, 2) + "\n");
-    console.log("achat: installed the watch-guard Stop hook (takes effect in new/resumed windows)");
-  }
-' "$SETTINGS" "$HOOK"
+# The tools alone are not enough: a window has to know to come online and keep a background
+# watcher running so an incoming message can wake it (the CLAUDE.md announce-loop block), and
+# it must never go idle without that watcher (the watch-guard Stop hook). Both are wired into
+# ~/.claude here. This is the same code `achat update` runs — see src/shared/apply-config.ts —
+# so a reworded block or a new hook reaches existing installs too, which a bare git pull does
+# not.
+"$NODE" "$APP/src/cli/achat.ts" apply-config
 
 cat <<DONE
 

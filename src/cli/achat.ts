@@ -29,6 +29,7 @@ import { startServer } from '../server/server.ts';
 import * as client from '../client/client.ts';
 import { generateSecret, deriveUserId } from '../shared/identity.ts';
 import { dbPath, writeServerInfo, readCursor, writeCursor, readSessionSecret, runningCommit, appDir, baseUrl, DEFAULT_HOST, DEFAULT_PORT } from '../shared/paths.ts';
+import { applyConfig } from '../shared/apply-config.ts';
 import type { Message } from '../shared/types.ts';
 
 function parseFlags(args: string[]): { flags: Record<string, string>; positional: string[] } {
@@ -121,6 +122,12 @@ async function cmdUpdate(): Promise<void> {
   const bundledNpm = join(dirname(process.execPath), '..', 'lib', 'node_modules', 'npm', 'bin', 'npm-cli.js');
   if (existsSync(bundledNpm)) run(process.execPath, [bundledNpm, 'ci', '--silent', '--omit=dev']);
   else run('npm', ['ci', '--silent', '--omit=dev']);
+
+  // Re-apply per-window config (CLAUDE.md block + watch-guard hook) so config changes actually
+  // reach existing installs — a bare `git pull` refreshes code but not what install.sh wired
+  // into ~/.claude. Note: this runs the *old* code path until the update that first pulls it,
+  // so a one-time `achat apply-config` (or a second `achat update`) closes that bootstrap gap.
+  applyConfig();
 
   const restarted = restartLocalDaemon();
   process.stdout.write(
@@ -370,8 +377,9 @@ async function main(): Promise<void> {
     case 'watch': return cmdWatch(flags);
     case 'forget': return cmdForget(flags, positional);
     case 'prune': return cmdPrune();
+    case 'apply-config': return void applyConfig();
     default:
-      process.stderr.write('usage: achat <version|update|serve|start|send|send-file|get-file|list|history|unread|read|receipt|watch|forget|prune> ...\n');
+      process.stderr.write('usage: achat <version|update|apply-config|serve|start|send|send-file|get-file|list|history|unread|read|receipt|watch|forget|prune> ...\n');
       process.exit(1);
   }
 }
