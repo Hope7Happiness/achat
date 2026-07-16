@@ -12,7 +12,7 @@ import { fileURLToPath } from 'node:url';
 import { join, dirname } from 'node:path';
 import * as client from '../client/client.ts';
 import { generateSecret, deriveUserId } from '../shared/identity.ts';
-import { writeCursor } from '../shared/paths.ts';
+import { writeCursor, writeSessionUser } from '../shared/paths.ts';
 import type { Message } from '../shared/types.ts';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -63,6 +63,12 @@ server.registerTool(
     // Anchor the background watcher to "now" so it only pings on messages that arrive
     // from here on. The unread count below already accounts for anything waiting.
     writeCursor(USER_ID, unread.highWater);
+
+    // Record which achat userId this Claude window is, so its watch-guard Stop hook can tell
+    // this window's watcher apart from any other window's on the same machine. Keyed by the
+    // Claude session id, which the hook also reads from its own env.
+    const claudeSession = process.env.CLAUDE_CODE_SESSION_ID;
+    if (claudeSession) writeSessionUser(claudeSession, USER_ID);
 
     const rosterText = roster.length
       ? roster.map((r) => `  ${r.online ? '●' : '○'} ${r.username}`).join('\n')

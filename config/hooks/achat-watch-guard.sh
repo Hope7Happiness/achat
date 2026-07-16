@@ -10,31 +10,45 @@
 # hook CAN refuse to let the window go idle without one — turning "the agent must remember"
 # into "the harness won't let it forget".
 #
-# Behaviour: if no live watcher is found, block the stop and tell the agent to relaunch it.
-# The loop-guard (stop_hook_active) means we nudge at most once per stop cycle, so a window
-# that genuinely cannot start a watcher is never trapped.
+# Behaviour: if THIS window has no watcher running, block the stop and tell the agent to
+# relaunch it. The loop-guard (stop_hook_active) means we nudge at most once per stop cycle,
+# so a window that genuinely cannot start a watcher is never trapped.
 
 set -u
 input="$(cat)"
 
-# Match only the real node watcher process. A bare `pgrep -f` also matches the bash wrapper
-# that launched it and any transient command that merely mentions the string (including this
-# hook), which would falsely report "watcher alive". So we additionally require argv[0] to be
-# the node binary — bash wrappers and shells are argv[0]=bash and get excluded. This is
-# portable (ps/pgrep exist on both Linux and macOS; /proc does not, and node reports its
-# /proc comm as "MainThread" anyway, so neither is usable).
-PAT="${ACHAT_WATCH_PAT:-achat.ts watch}"
+# Which achat identity is THIS window? A window is identified to its hooks by
+# CLAUDE_CODE_SESSION_ID (in both the MCP server's env and ours). The MCP server records
+# session→userId at achat-start; we read it back. This is what makes the guard correct on a
+# multi-window machine: we look for *our own* watcher, not just any watcher — otherwise
+# another window's watcher would satisfy this guard and let us go deaf.
+#
+# If there is no session id, or no mapping (this window never joined achat), there is nothing
+# to guard — allow the stop.
+CCSID="${CLAUDE_CODE_SESSION_ID:-}"
+[ -n "$CCSID" ] || exit 0
+MAP="${ACHAT_HOME:-$HOME/.achat}/session-user/$CCSID"
+[ -f "$MAP" ] || exit 0
+MYUSER="$(cat "$MAP" 2>/dev/null)"
+[ -n "$MYUSER" ] || exit 0
+
+# Look for THIS window's watcher: a node process whose command line is `achat.ts watch
+# --user <MYUSER>`. Requiring argv[0] to be the node binary excludes the bash wrapper that
+# launched it and any transient command that merely mentions the string (this hook included).
+# Portable: ps/pgrep exist on Linux and macOS; /proc does not, and node's /proc comm is
+# "MainThread" anyway, so neither is usable.
+NEEDLE="achat.ts watch --user $MYUSER"
 found=0
-for pid in $(pgrep -f "$PAT" 2>/dev/null); do
+for pid in $(pgrep -f "$NEEDLE" 2>/dev/null); do
   c=$(ps -p "$pid" -o command= 2>/dev/null) || continue
   first=${c%% *}
   case "${first##*/}" in node|node[0-9]*) ;; *) continue;; esac
-  case "$c" in *"achat.ts watch"*) found=1; break;; esac
+  case "$c" in *"$NEEDLE"*) found=1; break;; esac
 done
 [ "$found" = 1 ] && exit 0
 
-# No watcher. Only nudge once per stop cycle so we never trap the window in a loop.
+# No watcher for this window. Only nudge once per stop cycle so we never trap it in a loop.
 printf '%s' "$input" | grep -q '"stop_hook_active": *true' && exit 0
 
-printf '%s' '{"decision":"block","reason":"No achat watcher process is running, so this window can no longer be woken by incoming achat messages. Before you finish, relaunch the watcher in the BACKGROUND with the Bash tool (run_in_background: true) — the `achat watch` command that achat-start printed. Actually launch it; do not just acknowledge."}'
+printf '%s' '{"decision":"block","reason":"No achat watcher is running for this window, so it can no longer be woken by incoming achat messages. Before you finish, relaunch the watcher in the BACKGROUND with the Bash tool (run_in_background: true) — the `achat watch` command that achat-start printed (re-run achat-start if you no longer have it). Actually launch it; do not just acknowledge."}'
 exit 0

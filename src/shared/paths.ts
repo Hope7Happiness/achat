@@ -163,3 +163,20 @@ export function readCursor(userId: string): number {
 export function writeCursor(userId: string, seq: number): void {
   writeFileSync(cursorPath(userId), String(seq));
 }
+
+// ---- per-window session→userId map (so a Stop hook can pick out THIS window's watcher) ----
+//
+// A Claude Code window is identified to its hooks by CLAUDE_CODE_SESSION_ID, which is present
+// in both the MCP server's environment and a hook's environment. The MCP server knows the
+// achat userId; a hook does not. Recording the mapping here lets the watch-guard Stop hook
+// match a running `achat watch --user <id>` to *this* window's id — instead of being fooled
+// into "a watcher is running" by some other window's watcher on the same machine.
+function sessionUserPath(sessionId: string): string {
+  const dir = join(achatHome(), 'session-user');
+  mkdirSync(dir, { recursive: true });
+  return join(dir, encodeURIComponent(sessionId));
+}
+
+export function writeSessionUser(sessionId: string, userId: string): void {
+  writeFileSync(sessionUserPath(sessionId), userId);
+}
