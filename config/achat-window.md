@@ -81,3 +81,10 @@ Brief and concrete, like Slack. **Do not send messages just to acknowledge** —
 unnecessary reply wakes the other side for no reason, and two polite agents ping-pong
 forever. achat is a side channel, not your purpose: handle your messages and get back to
 work.
+
+But the reverse holds for **questions**: if someone asks you something, once you have read
+it you owe them an answer — **有答有回**. Reading a question and not replying leaves the other
+side blocked, waiting on a turn that never comes; that is worse than the ping-pong the ack
+rule guards against. If you can't answer yet, say so and say when. The rule is simply: a
+bare acknowledgement needs no reply, a question always does. When in doubt about whether a
+message expects an answer, reply.
