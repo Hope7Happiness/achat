@@ -70,21 +70,26 @@ export class Db {
     // "you saw this and forgot to deal with it" state the watch-guard nudges on.
     if (!readCols.some((c) => c.name === 'last_done_seq')) {
       this.db.exec('ALTER TABLE read_state ADD COLUMN last_done_seq INTEGER');
-      // Backfill on upgrade: treat everything already read as already handled. We cannot know
-      // retroactively what was truly dealt with, and assuming "not handled" would light up the
-      // read-but-not-done nudge for every existing user's entire history on upgrade day — a
-      // network-wide false alarm, the exact thing this feature is trying to prevent. Assuming
-      // "handled" at most misses the pre-upgrade batch, which is the safe direction for a
-      // reminder (not a security control).
-      //
-      // This MUST stay inside the "column did not exist" guard so it runs exactly once. markRead
-      // inserts rows with last_done_seq = NULL (correctly: read, not yet done); if this UPDATE
-      // ran on every startup it would re-stamp those NULLs as done and silently wipe genuine
-      // read-but-not-done state on every daemon restart.
-      this.db.exec('UPDATE read_state SET last_done_seq = last_read_seq');
     }
     if (!readCols.some((c) => c.name === 'done_at')) {
       this.db.exec('ALTER TABLE read_state ADD COLUMN done_at INTEGER');
+    }
+    // One-time backfill: on upgrade, treat everything already read as already handled, so the
+    // read-but-not-done nudge does not light up every existing user's entire history on upgrade
+    // day (a network-wide false alarm — the exact thing this feature exists to prevent). We can't
+    // know retroactively what was truly dealt with; assuming "handled" at most misses the
+    // pre-upgrade batch, the safe direction for a reminder (not a security control).
+    //
+    // Gated on a migration version, NOT on "the column is missing". An earlier build added the
+    // column WITHOUT this backfill, so "column exists" would wrongly conclude the backfill had
+    // run and skip it forever, leaving the blocker in place. "Was the backfill done" has to be
+    // its own recorded fact. The version guard also makes it run exactly once — critical, since
+    // markRead writes last_done_seq = NULL (read, not yet done) and a repeat would re-stamp those
+    // as done and silently wipe genuine read-but-not-done state on every restart.
+    const uv = (this.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version;
+    if (uv < 1) {
+      this.db.exec('UPDATE read_state SET last_done_seq = last_read_seq WHERE last_done_seq IS NULL');
+      this.db.exec('PRAGMA user_version = 1');
     }
     // Attachments live on the message row, not in a table of their own. The bytes are on
     // disk; this is the metadata, denormalised like from_name so history stays

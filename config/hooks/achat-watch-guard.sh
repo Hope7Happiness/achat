@@ -90,11 +90,12 @@ if [ -n "$ACHAT_BIN" ]; then
   case "$undone" in
     *"read but not handled"*)
       nudged_before && exit 0
-      # Sanitise before embedding in JSON: usernames have no server-side character whitelist, so
-      # a peer can put a newline (or any control char) in one — and a raw control char inside a
-      # JSON string literal is invalid, so the whole block would be silently dropped. Keep only
-      # printable characters, then drop the two printable ones that still break a JSON string.
-      safe=$(printf '%s' "$undone" | tr -cd '[:print:]' | tr -d '"\\')
+      # Sanitise before embedding in JSON: a control char (e.g. a newline in a peer's username)
+      # inside a JSON string literal is invalid and would silently drop the whole block. Delete
+      # the C0 control bytes + DEL, then the two printable chars (" \) that also break a JSON
+      # string. Byte-based under LC_ALL=C so it is locale-independent and leaves UTF-8 usernames
+      # (e.g. 小明) intact — `tr -cd '[:print:]'` would strip those under a C/POSIX locale.
+      safe=$(printf '%s' "$undone" | LC_ALL=C tr -d '\000-\037\177' | tr -d '"\\')
       printf '{"decision":"block","reason":"You have messages you read but never handled (%s). Deal with each (reply / act), then mark the conversation done with achat-mark-done — if one needs no action, still mark it done to clear it. Do not go idle leaving them unhandled."}' "$safe"
       exit 0 ;;
   esac
