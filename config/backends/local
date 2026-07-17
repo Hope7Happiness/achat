@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# achat "local" backend — same machine only, and the default.
+#
+# The daemon listens on loopback (127.0.0.1), so only processes on THIS machine can reach it.
+# That needs no Tailscale, no VPN, nothing — and loopback is also the safest place for a
+# bearer-secret daemon to listen, since it is unreachable from any network.
+#
+# A backend's job is to answer one question for the host: what address should the daemon BIND
+# to, and what SERVER url should clients (here, this machine's own windows) use to reach it?
+# It prints `BIND=...` and `SERVER=...` on stdout. That is the whole contract — see
+# config/backends/tailscale for a cross-machine one, and write your own the same way.
+set -eu
+port="${ACHAT_PORT:-4360}"
+case "${1:-}" in
+  host)
+    printf 'BIND=127.0.0.1\n'
+    printf 'SERVER=http://127.0.0.1:%s\n' "$port"
+    ;;
+  *)
+    echo "local backend: usage: $0 host" >&2
+    exit 2
+    ;;
+esac

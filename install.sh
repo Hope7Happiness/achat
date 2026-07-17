@@ -18,19 +18,25 @@ PORT="${ACHAT_PORT:-4360}"
 MODE=""
 SERVER=""
 PROXY="${ACHAT_PROXY:-}"
+BACKEND="${ACHAT_BACKEND:-local}"   # how the host is reached: local (default), tailscale, or your own
+BIND=""                              # explicit bind address; set by --bind, bypasses the backend
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --host)   MODE=host; shift ;;
-    --server) MODE=client; SERVER="${2:-}"; shift 2 ;;
-    --port)   PORT="${2:-}"; shift 2 ;;
+    --host)    MODE=host; shift ;;
+    --server)  MODE=client; SERVER="${2:-}"; shift 2 ;;
+    --backend) MODE="${MODE:-host}"; BACKEND="${2:-}"; shift 2 ;;
+    --bind)    MODE="${MODE:-host}"; BIND="${2:-}"; shift 2 ;;
+    --port)    PORT="${2:-}"; shift 2 ;;
     # For a machine with no root, where Tailscale can only run in userspace-networking mode
     # and the OS therefore has no route to the tailnet. See src/shared/proxy.ts.
-    --proxy)  PROXY="${2:-}"; shift 2 ;;
-    *) echo "usage: install.sh [--host | --server <url>] [--port N] [--proxy http://127.0.0.1:1055]" >&2; exit 1 ;;
+    --proxy)   PROXY="${2:-}"; shift 2 ;;
+    *) echo "usage: install.sh [--host] [--backend <name> | --bind <addr>] [--server <url>] [--port N] [--proxy <url>]" >&2; exit 1 ;;
   esac
 done
-[ -n "$MODE" ] || { echo "achat: pass --host (run the daemon here) or --server <url> (join one)" >&2; exit 1; }
+# Default: host this machine with the 'local' backend. Same-machine achat needs no network,
+# no Tailscale — the daemon on loopback and every window here talking to it is the whole setup.
+[ -n "$MODE" ] || MODE=host
 
 say()  { printf '\033[36m▸\033[0m %s\n' "$*"; }
 die()  { printf '\033[31m✗ %s\033[0m\n' "$*" >&2; exit 1; }
@@ -102,11 +108,6 @@ run_npm() {
   if [ -f "$NPM_CLI" ]; then "$NODE" "$NPM_CLI" "$@"; else npm "$@"; fi
 }
 
-TS=""
-for c in tailscale /Applications/Tailscale.app/Contents/MacOS/Tailscale; do
-  command -v "$c" >/dev/null 2>&1 && { TS="$c"; break; }
-done
-
 # ---- fetch ------------------------------------------------------------------
 
 if [ -d "$APP/.git" ]; then
@@ -126,27 +127,51 @@ say "installing dependencies"
 # fail. ci installs exactly the lockfile and touches nothing.
 (cd "$APP" && run_npm ci --silent --omit=dev >/dev/null)
 
-# ---- work out the server URL ------------------------------------------------
+# ---- work out where the daemon binds and how clients reach it ---------------
 
 if [ "$MODE" = host ]; then
-  [ -n "$TS" ] || die "tailscale not found — install it, or host the daemon on a machine that has it"
-  DNS=$("$TS" status --json | "$NODE" -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s);const n=j.Self&&j.Self.DNSName;if(!n){process.exit(1)}process.stdout.write(n.replace(/\.$/,""))})') \
-    || die "tailscale is installed but not logged in — run: tailscale up"
-  BIND=$("$TS" ip -4 | head -1)
-  SERVER="http://$DNS:$PORT"
-  say "this machine will host achat at $SERVER (bound to $BIND, tailnet only)"
+  if [ -n "$BIND" ]; then
+    # Explicit --bind bypasses the backend entirely: you handed us the address.
+    SERVER="${SERVER:-http://$BIND:$PORT}"
+    say "this machine will host achat at $SERVER (bound to $BIND)"
+  else
+    # A backend resolves (BIND, SERVER) for the host — what the daemon binds to, and the url
+    # clients use. Built-ins: local (default, loopback) and tailscale. A custom backend is just
+    # a script in ~/.achat/backends/<name> printing BIND=/SERVER= (see config/backends/*).
+    BE=""
+    for d in "${ACHAT_HOME:-$HOME/.achat}/backends" "$APP/config/backends"; do
+      [ -f "$d/$BACKEND" ] && { BE="$d/$BACKEND"; break; }
+    done
+    [ -n "$BE" ] || die "unknown backend '$BACKEND' — looked in ~/.achat/backends and $APP/config/backends"
+    say "resolving the host address via the '$BACKEND' backend"
+    BE_OUT=$(ACHAT_PORT="$PORT" ACHAT_NODE="$NODE" ACHAT_PROXY="$PROXY" bash "$BE" host) \
+      || die "the '$BACKEND' backend could not resolve a host address (its message is above)"
+    while IFS='=' read -r k v; do
+      case "$k" in BIND) BIND="$v" ;; SERVER) SERVER="$v" ;; PROXY) PROXY="$v" ;; esac
+    done <<BE_EOF
+$BE_OUT
+BE_EOF
+    [ -n "$BIND" ] && [ -n "$SERVER" ] || die "the '$BACKEND' backend did not print both BIND= and SERVER="
+    say "this machine will host achat at $SERVER (bound to $BIND, via '$BACKEND')"
+  fi
+  case "$BIND" in
+    0.0.0.0|'*')
+      say "WARNING: bind $BIND exposes the daemon to every network this machine is on. The session"
+      say "         secret is a bearer credential — only do this behind a TLS proxy or trusted network." ;;
+  esac
 else
   [ -n "$SERVER" ] || die "--server needs a URL"
   say "joining achat at $SERVER${PROXY:+ (through proxy $PROXY)}"
   curl -fsS -m 8 ${PROXY:+--proxy "$PROXY"} "$SERVER/health" >/dev/null 2>&1 \
-    || die "cannot reach $SERVER${PROXY:+ through $PROXY} — is the daemon running there, and is this machine on the tailnet?"
+    || die "cannot reach $SERVER${PROXY:+ through $PROXY} — is the daemon running there, and can this machine reach it?"
 fi
 
 # ---- host: run the daemon under the OS supervisor ---------------------------
 
 if [ "$MODE" = host ]; then
-  # Bind to the tailnet address, not 0.0.0.0: the session secret is a bearer credential, so
-  # the daemon must not be listening on a coffee-shop wifi interface.
+  # $BIND was resolved above — loopback for the local backend, a private address for a
+  # cross-machine one. Whatever it is, the session secret is a bearer credential, so it must
+  # never be a public interface; the backends and the --bind warning enforce that.
   if [ "$(uname)" = Darwin ]; then
     PLIST="$HOME/Library/LaunchAgents/com.achat.daemon.plist"
     mkdir -p "$(dirname "$PLIST")"

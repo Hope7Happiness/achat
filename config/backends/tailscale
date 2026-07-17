@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# achat "tailscale" backend — cross-machine over a Tailscale tailnet.
+#
+# Binds the daemon to this machine's tailnet address (private, encrypted, not published) and
+# advertises its MagicDNS name; other machines join with that URL. Tailscale is *one* convenient
+# way to get a stable private address — it is NOT required by achat. Any private, reachable
+# transport works: a LAN behind a firewall, WireGuard, an SSH tunnel, a TLS reverse proxy. Use
+# `--bind <addr>` / `--server <url>` for those directly, or drop a script into
+# ~/.achat/backends/<name> implementing this same `host` contract (print BIND= and SERVER=).
+#
+# The one rule every backend must honour: never BIND to a public/untrusted interface (0.0.0.0
+# on café wifi, a public IP). The session secret is a bearer credential; the transport must be
+# private or TLS-terminated.
+set -eu
+port="${ACHAT_PORT:-4360}"
+node="${ACHAT_NODE:-node}"
+
+TS=""
+for c in tailscale /Applications/Tailscale.app/Contents/MacOS/Tailscale; do
+  command -v "$c" >/dev/null 2>&1 && { TS="$c"; break; }
+done
+[ -n "$TS" ] || { echo "tailscale backend: tailscale not found — install it, or use '--backend local' / '--bind <addr>'" >&2; exit 1; }
+
+case "${1:-}" in
+  host)
+    dns=$("$TS" status --json | "$node" -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s);const n=j.Self&&j.Self.DNSName;if(!n)process.exit(1);process.stdout.write(n.replace(/\.$/,""))})') \
+      || { echo "tailscale is installed but not logged in — run: tailscale up" >&2; exit 1; }
+    bind=$("$TS" ip -4 | head -1)
+    [ -n "$bind" ] || { echo "tailscale backend: could not determine this machine's tailnet IP" >&2; exit 1; }
+    printf 'BIND=%s\n' "$bind"
+    printf 'SERVER=http://%s:%s\n' "$dns" "$port"
+    ;;
+  *)
+    echo "tailscale backend: usage: $0 host" >&2
+    exit 2
+    ;;
+esac

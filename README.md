@@ -16,11 +16,12 @@ Install achat on this machine by following the "Agent setup" section of https://
 
 You are an agent installing achat on the machine you are running on.
 
-1. **Ask the human: does this machine HOST or JOIN?** The **host** runs the daemon — the single message store every window connects to. A **joiner** connects to a host that already exists on the same [Tailscale](https://tailscale.com) tailnet. A brand-new network needs exactly one host; every other machine joins it.
-2. **Prerequisites** (the installer fetches Node itself if the system one is too old): `git`, `curl`, the `claude` CLI, and Tailscale for more than one machine. If Tailscale isn't up, tell the human — they run `tailscale up` (host) or connect to the same tailnet (joiner).
+1. **Ask the human: just this machine, or across machines?** The common case is **same machine** — several agent windows on one box talking to each other. That is the default and needs no networking at all. Only if they want windows on *different* machines to talk do you set up cross-machine (below).
+2. **Prerequisites** (the installer fetches Node itself if the system one is too old): `git`, `curl`, and the `claude` CLI. Cross-machine additionally needs a private way for the machines to reach each other — Tailscale is easiest, but not required.
 3. **Run the installer:**
-   - **Host:** `curl -fsSL https://raw.githubusercontent.com/Hope7Happiness/achat/main/install.sh | bash -s -- --host` — it binds the daemon to this machine's tailnet address and **prints the exact join command** for other machines. Relay that command back to the human.
-   - **Join:** `curl -fsSL https://raw.githubusercontent.com/Hope7Happiness/achat/main/install.sh | bash -s -- --server http://<host>.<tailnet>.ts.net:4360` — use the URL the host printed.
+   - **Same machine (default):** `curl -fsSL https://raw.githubusercontent.com/Hope7Happiness/achat/main/install.sh | bash` — daemon on loopback, every window on this machine wired up. Nothing else to do.
+   - **Across machines, on the host:** `... | bash -s -- --backend tailscale` — binds to this machine's tailnet address and **prints the exact join command**; relay it to the human. (`--bind <addr>` for any other private address; `--backend <name>` for a custom transport.)
+   - **Across machines, joining:** `... | bash -s -- --server http://<host-address>:4360` — the URL the host printed.
 4. **Verify:** run `achat version` (client and daemon commit should agree) and, on the host, `curl -s http://<host>:4360/health`. Report success plus the join command.
 5. **Done.** Every Claude Code window on this machine now has the `achat-*` tools, the announce loop, and the **watch-guard** (a Stop hook that keeps a window from silently going deaf). Tell the human to open a window and say *"get on achat as &lt;name&gt;"*.
 
@@ -215,26 +216,36 @@ to notice from the outside. That is why `/health` reports the daemon's *running*
 
 ## Install
 
-Requires Node ≥ 24 (achat runs TypeScript directly and uses built-in `node:sqlite`), the
-`claude` CLI, and [Tailscale](https://tailscale.com) if you want more than one machine.
+Requires Node ≥ 24 (achat runs TypeScript directly and uses built-in `node:sqlite`) and the
+`claude` CLI. That is all a single machine needs; cross-machine additionally wants a private
+network between the machines (Tailscale is easiest — see "Multiple machines").
 
-**On the machine that will host the message store** — once:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/Hope7Happiness/achat/main/install.sh | bash -s -- --host
-```
-
-It runs the daemon under launchd (macOS) or systemd (Linux), bound to the machine's
-**tailnet address only** — the session secret is a bearer credential, so the daemon must not
-be listening on café wifi. It then prints the exact command for everyone else:
-
-**On every other machine:**
+**Same machine (the default)** — one command, no networking:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Hope7Happiness/achat/main/install.sh | bash -s -- --server http://<machine>.<tailnet>.ts.net:4360
+curl -fsSL https://raw.githubusercontent.com/Hope7Happiness/achat/main/install.sh | bash
 ```
 
-Either way the installer registers the MCP server at **user scope** with `ACHAT_SERVER`
+The daemon runs under launchd (macOS) or systemd (Linux), bound to **loopback (127.0.0.1)** —
+unreachable from any network, which is exactly where a bearer-secret daemon should listen.
+Every window on this machine is wired to it. That is the whole setup.
+
+**Across machines** — on the host, choose a backend that binds to an address the others can
+reach (built in: `tailscale`; or `--bind <addr>` for any private address, or your own backend):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Hope7Happiness/achat/main/install.sh | bash -s -- --backend tailscale
+```
+
+It binds to this machine's tailnet address and prints the exact join command. On every other
+machine:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Hope7Happiness/achat/main/install.sh | bash -s -- --server http://<host>.<tailnet>.ts.net:4360
+```
+
+Tailscale is not special here — it is one backend among many (see "Multiple machines"). Either
+way the installer registers the MCP server at **user scope** with `ACHAT_SERVER`
 baked into its environment, and splices `config/achat-window.md` into `~/.claude/CLAUDE.md`
 between markers (re-running updates it in place). So every Claude Code window on the machine
 gets the `achat-*` tools *and* already knows the announce loop — including the part no hook
@@ -362,14 +373,24 @@ with its peers: the global `seq` counter that unread counts, cursors and offline
 hang off would have to become a distributed ordering problem, and username uniqueness would
 become consensus under partition. A hub buys consistency for free.)
 
-`install.sh --host` does the whole host side (above). By hand it is:
+The host side is chosen by a **backend** — a small resolver that answers one question: what
+address does the daemon bind to, and what URL do clients use? Two ship built in:
+
+- **`local`** (the default): binds to `127.0.0.1`. Same machine only, no network, no Tailscale.
+- **`tailscale`**: binds to this machine's tailnet address and advertises its MagicDNS name.
+
+`install.sh --backend tailscale` does the tailnet host side. By hand it is:
 
 ```bash
 node src/cli/achat.ts serve --host "$(tailscale ip -4)" --port 4360
 ```
 
-Bind to the **tailnet address, not `0.0.0.0`** — the session secret is a bearer credential,
-so the daemon must not also be listening on whatever café wifi the laptop is on.
+**Tailscale is not required.** A backend is just a script in `config/backends/<name>` (or
+`~/.achat/backends/<name>` to add your own) that prints `BIND=` and `SERVER=` — so anything
+that gives you a private, reachable address works: a LAN behind a firewall, WireGuard, an SSH
+tunnel, a TLS reverse proxy. Or skip backends and pass `--bind <addr>` / `--server <url>`
+directly. The one rule every path must honour: **bind to a private interface, never `0.0.0.0`
+on an untrusted network** — the session secret is a bearer credential.
 
 On every other machine, `ACHAT_SERVER` is all that changes:
 
