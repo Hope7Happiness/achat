@@ -24,6 +24,10 @@ export function achatHome(): string {
 
 // Where the daemon keeps attachment bytes. Files are big and binary; SQLite is neither the
 // place for them nor needed — the message row already holds the metadata and the access rule.
+//
+// NB: the daemon's behaviour depends on this function, but paths.ts is deliberately OUTSIDE the
+// daemon-code fingerprint (DAEMON_CODE_PATHS, below). If you change what the daemon reads from
+// here, the fingerprint won't notice — add the relevant check yourself.
 export function filesDir(): string {
   const dir = join(achatHome(), 'files');
   mkdirSync(dir, { recursive: true });
@@ -119,8 +123,10 @@ export function runningCommit(): string {
 //
 // paths.ts is deliberately NOT in the list even though the daemon imports it: it also holds a
 // lot of client-only state (session-user, cursors), so including it would reintroduce the
-// false alarms. Its daemon-relevant parts (dbPath, filesDir) are stable infra that changes
-// with server.ts anyway. If you add a file the daemon's wire behaviour depends on, list it.
+// false alarms. The daemon touches only a little of it (dbPath, filesDir), and so far those
+// have only changed alongside server.ts — but that is an *observation*, not a guarantee, so a
+// daemon-relevant change here can slip the fingerprint (see the note by filesDir). If you add a
+// file the daemon's wire behaviour depends on, list it.
 const DAEMON_CODE_PATHS = [
   'src/server/server.ts',
   'src/server/db.ts',
