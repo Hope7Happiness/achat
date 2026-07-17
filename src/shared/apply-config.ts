@@ -9,7 +9,7 @@
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { readFileSync, writeFileSync, existsSync, mkdirSync, chmodSync } from 'node:fs';
-import { appDir, pruneOrphanSessionUsers } from './paths.ts';
+import { appDir } from './paths.ts';
 
 const BEGIN = '<!-- achat:begin -->';
 const END = '<!-- achat:end -->';
@@ -95,8 +95,6 @@ function applyWatchGuardHook(log: Log): void {
 export function applyConfig(log: Log = (m) => process.stdout.write(m + '\n')): void {
   applyClaudeMd(log);
   applyWatchGuardHook(log);
-  // Sweep orphan watch-guard map entries (dead watchers, and ids older builds wrote from the
-  // MCP side). Only orphans — deleting a *live* watcher's entry would silently de-guard that
-  // window until it next relaunches. See pruneOrphanSessionUsers.
-  pruneOrphanSessionUsers();
+  // No GC of the session→userId map here — see paths.ts: deleting a "no-watcher" entry is
+  // exactly how you permanently de-guard a deaf window, and orphan entries are inert anyway.
 }
