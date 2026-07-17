@@ -28,7 +28,7 @@ import { join, dirname } from 'node:path';
 import { startServer } from '../server/server.ts';
 import * as client from '../client/client.ts';
 import { generateSecret, deriveUserId } from '../shared/identity.ts';
-import { dbPath, writeServerInfo, readCursor, writeCursor, readSessionSecret, runningCommit, appDir, baseUrl, DEFAULT_HOST, DEFAULT_PORT } from '../shared/paths.ts';
+import { dbPath, writeServerInfo, readCursor, writeCursor, readSessionSecret, writeSessionUser, runningCommit, appDir, baseUrl, DEFAULT_HOST, DEFAULT_PORT } from '../shared/paths.ts';
 import { applyConfig } from '../shared/apply-config.ts';
 import type { Message } from '../shared/types.ts';
 
@@ -242,6 +242,24 @@ async function cmdHistory(flags: Record<string, string>): Promise<void> {
 async function cmdWatch(flags: Record<string, string>): Promise<void> {
   const session = requireSession(flags);
   const userId = deriveUserId(session);
+
+  // Register this window's watcher with its watch-guard Stop hook: map the window's Claude
+  // session id to the userId this watcher serves. Done HERE, in the watcher (a Bash-launched
+  // process), not in the MCP server — only the Bash/watcher/hook side shares a stable
+  // CLAUDE_CODE_SESSION_ID; the MCP's diverges after --resume/compact. See paths.ts. Each
+  // launch overwrites the entry, so the hook always reads the current watcher's userId. If the
+  // id is absent (a manual terminal run, or a non-Claude host) we cannot register — say so out
+  // loud rather than let the guard silently become a no-op.
+  const ccsid = process.env.CLAUDE_CODE_SESSION_ID;
+  if (ccsid) {
+    writeSessionUser(ccsid, userId);
+  } else {
+    process.stderr.write(
+      'achat watch: CLAUDE_CODE_SESSION_ID not set — the watch-guard hook cannot see this watcher ' +
+        'and will not protect this window (fine for a manual run; keep the watcher alive yourself).\n',
+    );
+  }
+
   // Opt-in only (tests). 0 = block forever.
   const timeoutMs = flags.timeout ? Number(flags.timeout) * 1000 : 0;
 

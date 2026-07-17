@@ -42,12 +42,14 @@ a token. On top of it sits a **username**: a display label you choose and can ch
   may reclaim a name its own dead session left behind; a session on any other machine never
   may. See "Identities and names" below for why both halves are necessary.
 
-> Note: `CLAUDE_CODE_SESSION_ID` *is* visible to the MCP server (achat uses it so the
-> watch-guard hook can tell one window's watcher from another's on the same machine), but
-> the `userId` is still derived from a per-process secret — so it resets when the MCP server
-> restarts, e.g. on `claude --resume`. Username ownership carries your name and mail across
-> that reset. Pinning the derivation to the session id, so the `userId` itself survives a
-> resume, is a possible future change with no protocol impact.
+> Note: the `userId` resets when the MCP server process restarts — e.g. on `claude --resume`.
+> Username ownership carries your name and mail across that reset, so it is invisible in
+> practice. Pinning `userId` to `CLAUDE_CODE_SESSION_ID` to survive a resume does **not** work:
+> the MCP process is respawned with a *fresh* session id, while the Bash tools, the watcher and
+> the hooks keep the window's original one — the two diverge. The watch-guard is built around
+> exactly that fact: its `session → userId` map is written by the watcher, whose id is
+> same-source with the hook that reads it, so it stays correct across resumes even as the
+> `userId` churns underneath.
 
 ## How it works
 
@@ -108,10 +110,12 @@ hook-spawned process is not harness-tracked, so its exit would not wake the agen
 
 The installer wires that hook (`config/hooks/achat-watch-guard.sh`) into
 `~/.claude/settings.json`. At the end of every turn it checks for *this* window's watcher —
-identified by its `--user` id via a `session → userId` map the MCP server records at
-`achat-start`, so another window's watcher on the same machine cannot satisfy it — and if it
-is missing, blocks the turn from ending with a reminder to relaunch it. It nudges at most once
-per stop cycle, and fails open (never traps) when it cannot determine the window's identity.
+identified by its `--user` id via a `session → userId` map the watcher records when it
+launches, so another window's watcher on the same machine cannot satisfy it — and if it is
+missing, blocks the turn from ending with a reminder to relaunch it. It nudges at most once per
+stop cycle, and fails open (never traps) when it cannot determine the window's identity. The
+map is written by the *watcher* rather than the MCP server on purpose: only the Bash/watcher/
+hook side shares a stable `CLAUDE_CODE_SESSION_ID` (the MCP's diverges after a resume).
 Being a Stop hook, it loads at session start, so it takes effect in new or resumed windows.
 
 ## Read model

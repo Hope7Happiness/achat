@@ -11,7 +11,7 @@ import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomBytes } from 'node:crypto';
-import { mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync, existsSync, rmSync } from 'node:fs';
 
 export const DEFAULT_PORT = 4360;
 export const DEFAULT_HOST = '127.0.0.1';
@@ -166,11 +166,18 @@ export function writeCursor(userId: string, seq: number): void {
 
 // ---- per-window session→userId map (so a Stop hook can pick out THIS window's watcher) ----
 //
-// A Claude Code window is identified to its hooks by CLAUDE_CODE_SESSION_ID, which is present
-// in both the MCP server's environment and a hook's environment. The MCP server knows the
-// achat userId; a hook does not. Recording the mapping here lets the watch-guard Stop hook
-// match a running `achat watch --user <id>` to *this* window's id — instead of being fooled
-// into "a watcher is running" by some other window's watcher on the same machine.
+// The watch-guard hook needs to know which running `achat watch --user <id>` is THIS window's.
+// It keys off CLAUDE_CODE_SESSION_ID. THE LOAD-BEARING SUBTLETY, learned the hard way: the MCP
+// server's CLAUDE_CODE_SESSION_ID is NOT the same as the hook's after a `--resume` or `/compact`
+// — the MCP process gets respawned with a fresh id, while the Bash tools, the watcher they
+// launch, and the hooks all keep the window's original, stable id. So the only value guaranteed
+// same-source between writer and reader is the one on the Bash/watcher/hook side. That is why
+// this map is written by the WATCHER (a Bash-launched process, same id as the hook), NOT by the
+// MCP server. **Do not move the write back into the MCP** — it would key the map by an id the
+// hook never sees, and every resumed window would false-block. Each watch launch overwrites its
+// own key with the current userId, so the map self-heals on every relaunch and never needs the
+// id to be globally stable — only writer==reader source. (This is the weaker, and therefore
+// more durable, assumption.)
 function sessionUserPath(sessionId: string): string {
   const dir = join(achatHome(), 'session-user');
   mkdirSync(dir, { recursive: true });
@@ -179,4 +186,11 @@ function sessionUserPath(sessionId: string): string {
 
 export function writeSessionUser(sessionId: string, userId: string): void {
   writeFileSync(sessionUserPath(sessionId), userId);
+}
+
+// The map is a rebuildable cache, not state — every watcher rewrites its own entry on launch.
+// Clearing it (at install/update) drops stale orphans, e.g. entries an older build wrote from
+// the MCP side keyed by an id nothing reads any more, with no loss.
+export function clearSessionUserMap(): void {
+  rmSync(join(achatHome(), 'session-user'), { recursive: true, force: true });
 }

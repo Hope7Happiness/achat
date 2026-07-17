@@ -17,22 +17,24 @@
 set -u
 input="$(cat)"
 
-# Which achat identity is THIS window? A window is identified to its hooks by
-# CLAUDE_CODE_SESSION_ID (in both the MCP server's env and ours). The MCP server records
-# session→userId at achat-start; we read it back. This is what makes the guard correct on a
-# multi-window machine: we look for *our own* watcher, not just any watcher — otherwise
-# another window's watcher would satisfy this guard and let us go deaf.
+# Which achat identity is THIS window? We key off CLAUDE_CODE_SESSION_ID and read the
+# session→userId map to find our own watcher — so another window's watcher on the same machine
+# can't satisfy this guard and let us go deaf.
 #
-# If there is no session id, or no mapping (this window never joined achat), there is nothing
-# to guard — allow the stop.
+# CRITICAL: that map is written by the WATCHER (`achat watch`), NOT the MCP server. The MCP's
+# CLAUDE_CODE_SESSION_ID diverges from ours after --resume/compact (its process is respawned
+# with a fresh id); the Bash tools, the watcher they launch, and this hook all keep the
+# window's original id. Registering from the MCP keyed the map by an id we never read, so
+# resumed windows false-blocked. Writer and reader must be same-source — the watcher is.
+#
+# If there is no session id, or no mapping (this window has no watcher registered), there is
+# nothing we can identify — allow the stop.
 #
 # KNOWN GAP (fail-open is silent): we cannot distinguish "this window never joined achat" from
-# "this window joined but its mapping is missing" — a hook has no other handle on its own achat
-# identity. The latter can happen transiently during rollout (new hook installed, but the MCP
-# server still runs pre-mapping code until the window restarts) or where CLAUDE_CODE_SESSION_ID
-# is absent (non-Claude-Code harness). In those windows the guard degrades to a silent no-op —
-# the very failure mode it exists to catch. Blocking instead would wrongly trap genuinely
-# non-achat windows, so fail-open is the safe choice; this note is the honest disclosure of it.
+# "joined but not yet registered" (e.g. between session start and the first watch launch, or on
+# a host with no CLAUDE_CODE_SESSION_ID). There the guard is a silent no-op. Blocking instead
+# would wrongly trap genuinely non-achat windows, so fail-open is the safe choice; `achat watch`
+# prints a warning when it can't register, which is the audible half of this disclosure.
 CCSID="${CLAUDE_CODE_SESSION_ID:-}"
 [ -n "$CCSID" ] || exit 0
 MAP="${ACHAT_HOME:-$HOME/.achat}/session-user/$CCSID"

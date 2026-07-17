@@ -12,7 +12,7 @@ import { fileURLToPath } from 'node:url';
 import { join, dirname } from 'node:path';
 import * as client from '../client/client.ts';
 import { generateSecret, deriveUserId } from '../shared/identity.ts';
-import { writeCursor, writeSessionUser } from '../shared/paths.ts';
+import { writeCursor } from '../shared/paths.ts';
 import type { Message } from '../shared/types.ts';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -64,22 +64,9 @@ server.registerTool(
     // from here on. The unread count below already accounts for anything waiting.
     writeCursor(USER_ID, unread.highWater);
 
-    // Record which achat userId this Claude window is, so its watch-guard Stop hook can tell
-    // this window's watcher apart from any other window's on the same machine. Keyed by the
-    // Claude session id, which the hook also reads from its own env. If we cannot record it,
-    // surface that in the reply rather than letting the guard silently degrade to a no-op —
-    // making the known fail-open gap visible is the whole point.
-    const claudeSession = process.env.CLAUDE_CODE_SESSION_ID;
-    let guardNote = '';
-    if (claudeSession) {
-      try {
-        writeSessionUser(claudeSession, USER_ID);
-      } catch (err) {
-        guardNote = `\n\n⚠️ Could not record this window's watch-guard identity (${(err as Error).message}). If the watch-guard hook is installed it cannot protect this window — keep the watcher running yourself.`;
-      }
-    } else {
-      guardNote = `\n\n⚠️ CLAUDE_CODE_SESSION_ID is not set, so the watch-guard hook (if installed) cannot identify this window's watcher and will not protect it — keep the watcher running yourself.`;
-    }
+    // NB: the watch-guard's session→userId map is written by the WATCHER, not here — the MCP's
+    // CLAUDE_CODE_SESSION_ID diverges from the hook's after --resume/compact, so registering it
+    // here would key the map by an id the hook never reads. See src/shared/paths.ts.
 
     const rosterText = roster.length
       ? roster.map((r) => `  ${r.online ? '●' : '○'} ${r.username}`).join('\n')
@@ -105,7 +92,7 @@ server.registerTool(
 
     return {
       content: [
-        { type: 'text', text: `You are online as "${currentUsername}".\n\nContacts:\n${rosterText}${unreadText}${watchHint}${guardNote}` },
+        { type: 'text', text: `You are online as "${currentUsername}".\n\nContacts:\n${rosterText}${unreadText}${watchHint}` },
       ],
     };
   },
