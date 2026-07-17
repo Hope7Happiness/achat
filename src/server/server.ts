@@ -130,6 +130,9 @@ export function startServer(dbFile: string, host: string, port: number): Promise
     if (!secret) return res.status(400).json({ error: 'session required' });
     if (!username) return res.status(400).json({ error: 'username required' });
     if (username.length > 64) return res.status(400).json({ error: 'username too long' });
+    // No control characters: a newline in a username breaks anything that embeds it in a line
+    // or a JSON string (e.g. the watch-guard's nudge), and a peer picks the name you display.
+    if (/[\u0000-\u001f\u007f]/.test(username)) return res.status(400).json({ error: 'username has control characters' });
     const userId = deriveUserId(secret);
     const machineId = machine ? deriveUserId(machine) : '';
     try {

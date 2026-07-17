@@ -77,16 +77,24 @@ ACHAT_BIN=""
 if [ -x "$HOME/.local/bin/achat" ]; then ACHAT_BIN="$HOME/.local/bin/achat"
 elif command -v achat >/dev/null 2>&1; then ACHAT_BIN="$(command -v achat)"; fi
 if [ -n "$ACHAT_BIN" ]; then
+  # Bound the daemon round-trip so a hung daemon can't stall the stop. macOS has no `timeout`;
+  # perl (shipped on macOS) gives us an alarm. Last resort: run unbounded and rely on the CLI's
+  # own fast-fail when the daemon is down.
   if command -v timeout >/dev/null 2>&1; then
-    undone="$(timeout 6 "$ACHAT_BIN" undone --user "$MYUSER" 2>/dev/null)"
+    undone="$(timeout 2 "$ACHAT_BIN" undone --user "$MYUSER" 2>/dev/null)"
+  elif command -v perl >/dev/null 2>&1; then
+    undone="$(perl -e 'alarm shift; exec @ARGV' 2 "$ACHAT_BIN" undone --user "$MYUSER" 2>/dev/null)"
   else
     undone="$("$ACHAT_BIN" undone --user "$MYUSER" 2>/dev/null)"
   fi
   case "$undone" in
     *"read but not handled"*)
       nudged_before && exit 0
-      # Sanitise for embedding in JSON (usernames are arbitrary): drop quotes/backslashes.
-      safe=$(printf '%s' "$undone" | tr -d '"\\')
+      # Sanitise before embedding in JSON: usernames have no server-side character whitelist, so
+      # a peer can put a newline (or any control char) in one — and a raw control char inside a
+      # JSON string literal is invalid, so the whole block would be silently dropped. Keep only
+      # printable characters, then drop the two printable ones that still break a JSON string.
+      safe=$(printf '%s' "$undone" | tr -cd '[:print:]' | tr -d '"\\')
       printf '{"decision":"block","reason":"You have messages you read but never handled (%s). Deal with each (reply / act), then mark the conversation done with achat-mark-done — if one needs no action, still mark it done to clear it. Do not go idle leaving them unhandled."}' "$safe"
       exit 0 ;;
   esac

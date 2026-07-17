@@ -70,6 +70,18 @@ export class Db {
     // "you saw this and forgot to deal with it" state the watch-guard nudges on.
     if (!readCols.some((c) => c.name === 'last_done_seq')) {
       this.db.exec('ALTER TABLE read_state ADD COLUMN last_done_seq INTEGER');
+      // Backfill on upgrade: treat everything already read as already handled. We cannot know
+      // retroactively what was truly dealt with, and assuming "not handled" would light up the
+      // read-but-not-done nudge for every existing user's entire history on upgrade day — a
+      // network-wide false alarm, the exact thing this feature is trying to prevent. Assuming
+      // "handled" at most misses the pre-upgrade batch, which is the safe direction for a
+      // reminder (not a security control).
+      //
+      // This MUST stay inside the "column did not exist" guard so it runs exactly once. markRead
+      // inserts rows with last_done_seq = NULL (correctly: read, not yet done); if this UPDATE
+      // ran on every startup it would re-stamp those NULLs as done and silently wipe genuine
+      // read-but-not-done state on every daemon restart.
+      this.db.exec('UPDATE read_state SET last_done_seq = last_read_seq');
     }
     if (!readCols.some((c) => c.name === 'done_at')) {
       this.db.exec('ALTER TABLE read_state ADD COLUMN done_at INTEGER');
