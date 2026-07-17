@@ -255,9 +255,36 @@ async function cmdHistory(flags: Record<string, string>): Promise<void> {
 // answer to that is not to wake the agent periodically to check — it is for the watcher to
 // heal itself: reconnect underneath, and stay silent while doing it. So "the process
 // exited" now means exactly "you have mail", with no false positives.
+// 128 + signal number — the code Node would exit with if we did NOT handle the signal. We
+// preserve it so an observer reading the task output still sees the familiar 143 (SIGTERM) etc.
+const WATCH_SIGNAL_EXIT: Record<string, number> = { SIGHUP: 129, SIGINT: 130, SIGTERM: 143 };
+
 async function cmdWatch(flags: Record<string, string>): Promise<void> {
   const session = requireSession(flags);
   const userId = deriveUserId(session);
+
+  // Observability (diagnostic, NOT a fix): make a watcher's death discoverable. Its *normal*
+  // exits already narrate themselves (delivery prints 📨; timeout / not-registered print a
+  // reason). The two SILENT death classes are (a) a catchable signal — the process is killed and
+  // leaves an EMPTY task output that looks identical to a still-running watcher — and (b) an
+  // uncaught crash. Log both to stderr before exiting so "it died, and how" shows up in the task
+  // output the agent reads on wake. This does not stop deaths and does not touch the watch-guard;
+  // it just turns "died in silence" into a line someone can find. SIGKILL is uncatchable and
+  // cannot be logged here (a known gap — nothing runs on SIGKILL).
+  for (const sig of ['SIGTERM', 'SIGHUP', 'SIGINT'] as const) {
+    process.on(sig, () => {
+      process.stderr.write(`achat watch: exiting on ${sig}\n`);
+      process.exit(WATCH_SIGNAL_EXIT[sig]);
+    });
+  }
+  process.on('uncaughtException', (err) => {
+    process.stderr.write(`achat watch: crashed (uncaught exception): ${(err as Error).stack ?? err}\n`);
+    process.exit(70);
+  });
+  process.on('unhandledRejection', (reason) => {
+    process.stderr.write(`achat watch: crashed (unhandled rejection): ${(reason as Error)?.stack ?? reason}\n`);
+    process.exit(70);
+  });
 
   // Register this window's watcher with its watch-guard Stop hook: map the window's Claude
   // session id to the userId this watcher serves. Done HERE, in the watcher (a Bash-launched

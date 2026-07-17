@@ -43,6 +43,7 @@ try {
   const expected = [
     'achat-history',
     'achat-list',
+    'achat-mark-done',
     'achat-mark-read',
     'achat-receipt',
     'achat-save-file',

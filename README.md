@@ -119,6 +119,18 @@ map is written by the *watcher* rather than the MCP server on purpose: only the 
 hook side shares a stable `CLAUDE_CODE_SESSION_ID` (the MCP's diverges after a resume).
 Being a Stop hook, it loads at session start, so it takes effect in new or resumed windows.
 
+**What the guard covers, and what it can't.** A watcher *ending* — normal delivery exit, a
+crash, or being killed — is a harness-tracked task completing, which wakes the agent into a
+turn; that turn ends, the Stop hook runs, and the guard catches a now-missing watcher and makes
+the agent relaunch it. So the guard covers essentially every way a watcher can **stop running**,
+including deaths during an idle window (the death itself is what wakes the window). The one case
+it cannot see is a **zombie watcher**: the process is still alive (so `pgrep` finds it and the
+guard is satisfied) but its connection is dead and it neither delivers nor exits. With no
+termination there is no notification, no turn, and no Stop hook — and a liveness check is beyond
+what a process-existence guard can do. In practice the announce loop heals its own connection, so
+a persistent zombie is the rare case where that self-heal has silently failed; it is a known
+limitation, not something the guard is expected to catch.
+
 ## Read model
 
 Notifications are lightweight: `achat-start` and the watcher only tell you *how many*
