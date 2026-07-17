@@ -314,6 +314,28 @@ export function formatUnread(u: UnreadSummary): string {
   return `${u.total} unread (${breakdown})`;
 }
 
+// Read-but-not-done: conversations you have seen but not marked handled.
+export interface UndoneSummary {
+  total: number;
+  bySender: { username: string; count: number }[];
+}
+
+export async function undone(session: string): Promise<UndoneSummary> {
+  await ensureServer();
+  return api<UndoneSummary>('/undone', session);
+}
+
+export async function markDone(session: string, withUser: string): Promise<UndoneSummary> {
+  await ensureServer();
+  return api<UndoneSummary>('/done', session, { method: 'POST', body: JSON.stringify({ with: withUser }) });
+}
+
+export function formatUndone(u: UndoneSummary): string {
+  if (u.total === 0) return 'nothing awaiting handling';
+  const breakdown = u.bySender.map((s) => `${s.username}: ${s.count}`).join(', ');
+  return `${u.total} read but not handled (${breakdown})`;
+}
+
 // Open a live WebSocket. Replays backlog after `since`, then streams new messages.
 export function watch(
   session: string,

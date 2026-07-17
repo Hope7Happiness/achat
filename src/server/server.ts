@@ -288,6 +288,27 @@ export function startServer(dbFile: string, host: string, port: number): Promise
     res.json(db.unreadSummary(me.userId));
   });
 
+  // Read-but-not-done summary: conversations you have seen but not yet marked handled.
+  // Does not change any state. Drives the watch-guard's "you have unhandled messages" nudge.
+  app.get('/undone', (req, res) => {
+    const me = caller(req, res);
+    if (!me) return;
+    res.json(db.undoneSummary(me.userId));
+  });
+
+  // Mark a conversation done (handled) up to the peer's latest message. Done implies read.
+  // Body: { with: <username> }. Returns the refreshed undone summary.
+  app.post('/done', (req, res) => {
+    const me = caller(req, res);
+    if (!me) return;
+    const otherName = (req.body?.with ?? '').toString().trim();
+    if (!otherName) return res.status(400).json({ error: 'with required' });
+    const otherId = db.resolveUsername(otherName);
+    if (!otherId) return res.status(404).json({ error: `unknown identity: ${otherName}` });
+    db.markDone(me.userId, otherId, db.latestFromPeer(me.userId, otherId), now());
+    res.json(db.undoneSummary(me.userId));
+  });
+
   // Read receipts: has the peer read what *I* sent them? ?with=<username>
   // Pull-only, and deliberately so — see Db.receipt.
   app.get('/receipts', (req, res) => {

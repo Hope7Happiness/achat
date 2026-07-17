@@ -215,6 +215,24 @@ server.registerTool(
 );
 
 server.registerTool(
+  'achat-mark-done',
+  {
+    description:
+      'Mark a conversation *handled* — a step past read. achat-mark-read only clears the unread ' +
+      'badge (you have seen it); mark-done records that you actually dealt with it. A message you ' +
+      'read but never marked done is the "saw it and forgot" state, and the watch-guard reminds you ' +
+      'of it before you go idle. So once you have finished replying to or acting on a conversation, ' +
+      'call this. Done implies read.',
+    inputSchema: { with: z.string().describe('the username whose conversation you have handled') },
+  },
+  async ({ with: other }) => {
+    requireStarted();
+    const u = await client.markDone(SESSION, other);
+    return { content: [{ type: 'text', text: `Marked ${other} done. Now: ${client.formatUndone(u)}.` }] };
+  },
+);
+
+server.registerTool(
   'achat-unread',
   {
     description:

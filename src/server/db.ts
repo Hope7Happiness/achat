@@ -65,6 +65,15 @@ export class Db {
     if (!readCols.some((c) => c.name === 'read_at')) {
       this.db.exec('ALTER TABLE read_state ADD COLUMN read_at INTEGER');
     }
+    // "done" is a second cursor past "read": read clears the unread badge (you saw it), done
+    // records that you actually handled it. The gap between them — read but not done — is the
+    // "you saw this and forgot to deal with it" state the watch-guard nudges on.
+    if (!readCols.some((c) => c.name === 'last_done_seq')) {
+      this.db.exec('ALTER TABLE read_state ADD COLUMN last_done_seq INTEGER');
+    }
+    if (!readCols.some((c) => c.name === 'done_at')) {
+      this.db.exec('ALTER TABLE read_state ADD COLUMN done_at INTEGER');
+    }
     // Attachments live on the message row, not in a table of their own. The bytes are on
     // disk; this is the metadata, denormalised like from_name so history stays
     // self-contained. It also *is* the access-control record: you may fetch a file exactly
@@ -341,6 +350,22 @@ export class Db {
       .run(userId, peerId, seq, now);
   }
 
+  // Mark handled up to seq. Done implies read, so this advances BOTH cursors — otherwise you
+  // could have a message that is "done" yet still counted unread, which is incoherent.
+  markDone(userId: string, peerId: string, seq: number, now: number): void {
+    this.db
+      .prepare(
+        `INSERT INTO read_state (user_id, peer_id, last_read_seq, read_at, last_done_seq, done_at)
+           VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT (user_id, peer_id) DO UPDATE SET
+           last_read_seq = MAX(last_read_seq, excluded.last_read_seq),
+           read_at       = excluded.read_at,
+           last_done_seq = MAX(COALESCE(last_done_seq, 0), excluded.last_done_seq),
+           done_at       = excluded.done_at`,
+      )
+      .run(userId, peerId, seq, now, seq, now);
+  }
+
   // Has the peer read what I sent them?
   //
   // The same read_state row that drives *their* unread badge answers this, read from the
@@ -393,6 +418,28 @@ export class Db {
       .all(userId, userId) as { fromId: string; username: string; count: number }[];
     const total = rows.reduce((n, r) => n + r.count, 0);
     return { total, bySender: rows.map((r) => ({ username: r.username, count: r.count })), highWater: this.maxInboxSeq(userId) };
+  }
+
+  // Messages that are read but not yet marked done — "seen and not dealt with". Same shape as
+  // unreadSummary, but the window is (last_done_seq, last_read_seq] instead of (last_read_seq, ∞).
+  undoneSummary(userId: string): { total: number; bySender: { username: string; count: number }[] } {
+    const rows = this.db
+      .prepare(
+        `SELECT m.from_id AS fromId,
+                COALESCE(id.username, MAX(m.from_name)) AS username,
+                COUNT(*) AS count
+         FROM messages m
+         LEFT JOIN read_state r ON r.user_id = ? AND r.peer_id = m.from_id
+         LEFT JOIN identities id ON id.user_id = m.from_id
+         WHERE m.to_id = ?
+           AND m.seq <= COALESCE(r.last_read_seq, 0)
+           AND m.seq >  COALESCE(r.last_done_seq, 0)
+         GROUP BY m.from_id
+         ORDER BY username`,
+      )
+      .all(userId, userId) as { fromId: string; username: string; count: number }[];
+    const total = rows.reduce((n, r) => n + r.count, 0);
+    return { total, bySender: rows.map((r) => ({ username: r.username, count: r.count })) };
   }
 
   // Last `limit` messages of the pairwise conversation between two userIds, chronological.

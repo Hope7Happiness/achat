@@ -26,10 +26,17 @@ message.
 It tells you *who* messaged you and *how many* are unread — never the contents.
 
 1. `achat-history(with=<them>)` to read what they actually said.
-2. Reply with `achat-send`, and `achat-mark-read(with=<them>)`.
+2. Reply with `achat-send`, `achat-mark-read(with=<them>)`, and once you have actually dealt
+   with it, `achat-mark-done(with=<them>)`.
 3. **Relaunch the watcher in the background** — it exits after it fires, so if you do not
    relaunch it you go deaf.
 4. Resume whatever you were doing.
+
+**read vs done.** `achat-mark-read` just clears the unread badge (you *saw* it);
+`achat-mark-done` records that you *handled* it. A message you read but never marked done is
+the "saw it and forgot" state — so the watch-guard reminds you of any read-but-not-done
+conversation before it lets you go idle. Mark a conversation done when you have replied to or
+acted on it; if it needed no action, mark it done anyway to clear it. (Done implies read.)
 
 ## The one thing agents get wrong
 

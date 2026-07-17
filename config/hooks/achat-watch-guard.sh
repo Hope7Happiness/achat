@@ -10,9 +10,14 @@
 # hook CAN refuse to let the window go idle without one — turning "the agent must remember"
 # into "the harness won't let it forget".
 #
-# Behaviour: if THIS window has no watcher running, block the stop and tell the agent to
-# relaunch it. The loop-guard (stop_hook_active) means we nudge at most once per stop cycle,
-# so a window that genuinely cannot start a watcher is never trapped.
+# Behaviour, two checks at turn end:
+#   1. If THIS window has no watcher running, block and tell the agent to relaunch it (else the
+#      window goes deaf).
+#   2. If a watcher IS running but there are messages the agent read yet never marked done —
+#      the "saw it and forgot" state — block and tell it to handle them (best-effort: skipped
+#      if the daemon/CLI can't be reached, since an inbox check must never break the stop).
+# The loop-guard (stop_hook_active) means we nudge at most once per stop cycle, so a window is
+# never trapped.
 
 set -u
 input="$(cat)"
@@ -55,10 +60,35 @@ for pid in $(pgrep -f "$NEEDLE" 2>/dev/null); do
   case "${first##*/}" in node|node[0-9]*) ;; *) continue;; esac
   case "$c" in *"$NEEDLE"*) found=1; break;; esac
 done
-[ "$found" = 1 ] && exit 0
 
-# No watcher for this window. Only nudge once per stop cycle so we never trap it in a loop.
-printf '%s' "$input" | grep -q '"stop_hook_active": *true' && exit 0
+# once-per-cycle loop guard: if we already nudged this stop, let the window go (never trap it).
+nudged_before() { printf '%s' "$input" | grep -q '"stop_hook_active": *true'; }
 
-printf '%s' '{"decision":"block","reason":"No achat watcher is running for this window, so it can no longer be woken by incoming achat messages. Before you finish, relaunch the watcher in the BACKGROUND with the Bash tool (run_in_background: true) — the `achat watch` command that achat-start printed (re-run achat-start if you no longer have it). Actually launch it; do not just acknowledge."}'
+if [ "$found" != 1 ]; then
+  nudged_before && exit 0
+  printf '%s' '{"decision":"block","reason":"No achat watcher is running for this window, so it can no longer be woken by incoming achat messages. Before you finish, relaunch the watcher in the BACKGROUND with the Bash tool (run_in_background: true) — the `achat watch` command that achat-start printed (re-run achat-start if you no longer have it). Actually launch it; do not just acknowledge."}'
+  exit 0
+fi
+
+# Watcher is up. Second check: messages you READ (cleared the badge) but never marked DONE —
+# the "saw it and forgot" state. Best-effort: if the CLI or daemon can't be reached, skip it;
+# an inbox check must never break the stop. Uses the `achat` shim (it pins node + ACHAT_SERVER).
+ACHAT_BIN=""
+if [ -x "$HOME/.local/bin/achat" ]; then ACHAT_BIN="$HOME/.local/bin/achat"
+elif command -v achat >/dev/null 2>&1; then ACHAT_BIN="$(command -v achat)"; fi
+if [ -n "$ACHAT_BIN" ]; then
+  if command -v timeout >/dev/null 2>&1; then
+    undone="$(timeout 6 "$ACHAT_BIN" undone --user "$MYUSER" 2>/dev/null)"
+  else
+    undone="$("$ACHAT_BIN" undone --user "$MYUSER" 2>/dev/null)"
+  fi
+  case "$undone" in
+    *"read but not handled"*)
+      nudged_before && exit 0
+      # Sanitise for embedding in JSON (usernames are arbitrary): drop quotes/backslashes.
+      safe=$(printf '%s' "$undone" | tr -d '"\\')
+      printf '{"decision":"block","reason":"You have messages you read but never handled (%s). Deal with each (reply / act), then mark the conversation done with achat-mark-done — if one needs no action, still mark it done to clear it. Do not go idle leaving them unhandled."}' "$safe"
+      exit 0 ;;
+  esac
+fi
 exit 0

@@ -367,6 +367,21 @@ async function cmdRead(flags: Record<string, string>): Promise<void> {
   process.stdout.write(`marked ${other} read. now: ${client.formatUnread(u)}\n`);
 }
 
+// Read-but-not-done summary (used by the watch-guard hook, so keep the output stable: an empty
+// line means "nothing awaiting handling").
+async function cmdUndone(flags: Record<string, string>): Promise<void> {
+  const session = requireSession(flags);
+  process.stdout.write(client.formatUndone(await client.undone(session)) + '\n');
+}
+
+async function cmdDone(flags: Record<string, string>): Promise<void> {
+  const session = requireSession(flags);
+  const other = flags.with;
+  if (!other) throw new Error('usage: achat done --session S --with B');
+  const u = await client.markDone(session, other);
+  process.stdout.write(`marked ${other} done. now: ${client.formatUndone(u)}\n`);
+}
+
 async function cmdReceipt(flags: Record<string, string>): Promise<void> {
   const session = requireSession(flags);
   const other = flags.with;
@@ -407,13 +422,15 @@ async function main(): Promise<void> {
     case 'history': return cmdHistory(flags);
     case 'unread': return cmdUnread(flags);
     case 'read': return cmdRead(flags);
+    case 'undone': return cmdUndone(flags);
+    case 'done': return cmdDone(flags);
     case 'receipt': return cmdReceipt(flags);
     case 'watch': return cmdWatch(flags);
     case 'forget': return cmdForget(flags, positional);
     case 'prune': return cmdPrune();
     case 'apply-config': return void applyConfig();
     default:
-      process.stderr.write('usage: achat <version|update|apply-config|serve|start|send|send-file|get-file|list|history|unread|read|receipt|watch|forget|prune> ...\n');
+      process.stderr.write('usage: achat <version|update|apply-config|serve|start|send|send-file|get-file|list|history|unread|read|undone|done|receipt|watch|forget|prune> ...\n');
       process.exit(1);
   }
 }
