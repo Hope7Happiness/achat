@@ -11,7 +11,8 @@ import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomBytes } from 'node:crypto';
-import { mkdirSync, readFileSync, writeFileSync, existsSync, rmSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync, existsSync, rmSync, readdirSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 
 export const DEFAULT_PORT = 4360;
 export const DEFAULT_HOST = '127.0.0.1';
@@ -188,9 +189,51 @@ export function writeSessionUser(sessionId: string, userId: string): void {
   writeFileSync(sessionUserPath(sessionId), userId);
 }
 
-// The map is a rebuildable cache, not state — every watcher rewrites its own entry on launch.
-// Clearing it (at install/update) drops stale orphans, e.g. entries an older build wrote from
-// the MCP side keyed by an id nothing reads any more, with no loss.
-export function clearSessionUserMap(): void {
-  rmSync(join(achatHome(), 'session-user'), { recursive: true, force: true });
+// Sweep orphan entries — those whose userId has no live `achat watch` process — from the map.
+// This runs at install/update to clear stale entries older builds left behind (e.g. ones the
+// MCP used to write, keyed by an id no hook reads). It must NOT delete entries for *live*
+// watchers: an entry is a window's only registration, and deleting a live one silently
+// de-guards that window until it happens to relaunch its watcher — which, for a quiet window,
+// may be hours away and invisible. So we keep any entry whose userId is currently being
+// watched, and drop only the genuinely dead ones. (Portable enumeration via ps/pgrep, matching
+// the hook: argv[0] must be node, excluding the bash wrapper that launched it.)
+export function pruneOrphanSessionUsers(): void {
+  const dir = join(achatHome(), 'session-user');
+  if (!existsSync(dir)) return;
+
+  const live = new Set<string>();
+  let pids: string[];
+  try {
+    pids = execFileSync('pgrep', ['-f', 'achat.ts watch --user'], { encoding: 'utf8' })
+      .split('\n')
+      .map((s) => s.trim())
+      .filter(Boolean);
+  } catch (err) {
+    // pgrep exits 1 when nothing matches — that just means no live watchers (every entry is an
+    // orphan). Any other failure (pgrep missing, etc.) is unsafe: better to keep everything
+    // than risk de-guarding a live window, so bail.
+    if ((err as { status?: number }).status === 1) pids = [];
+    else return;
+  }
+  for (const pid of pids) {
+    let cmd = '';
+    try {
+      cmd = execFileSync('ps', ['-p', pid, '-o', 'command='], { encoding: 'utf8' }).trim();
+    } catch {
+      continue;
+    }
+    const argv0 = (cmd.split(/\s+/)[0].split('/').pop() ?? '');
+    if (!/^node[0-9.]*$/.test(argv0)) continue; // exclude bash wrappers / transient commands
+    const m = cmd.match(/achat\.ts watch --user (\S+)/);
+    if (m) live.add(m[1]);
+  }
+
+  for (const key of readdirSync(dir)) {
+    try {
+      const userId = readFileSync(join(dir, key), 'utf8').trim();
+      if (!live.has(userId)) rmSync(join(dir, key), { force: true });
+    } catch {
+      /* skip unreadable entries */
+    }
+  }
 }
