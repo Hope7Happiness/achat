@@ -10,7 +10,7 @@
 import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { randomBytes } from 'node:crypto';
+import { randomBytes, createHash } from 'node:crypto';
 import { mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
 
 export const DEFAULT_PORT = 4360;
@@ -106,6 +106,49 @@ const COMMIT = readCommit();
 
 export function runningCommit(): string {
   return COMMIT;
+}
+
+// ---- what code is the *daemon* running? ----
+//
+// runningCommit() is the whole-repo commit, which changes for a docs tweak, a hook, a
+// client-only edit — none of which change how the daemon behaves. Comparing it cried "the
+// host is running old code!" on every such change (false alarms train people to ignore the
+// real one). So the daemon also fingerprints just the files its *behaviour* depends on, and
+// clients compare THAT. A README or watch-guard change leaves it untouched; a real
+// server/protocol change moves it.
+//
+// paths.ts is deliberately NOT in the list even though the daemon imports it: it also holds a
+// lot of client-only state (session-user, cursors), so including it would reintroduce the
+// false alarms. Its daemon-relevant parts (dbPath, filesDir) are stable infra that changes
+// with server.ts anyway. If you add a file the daemon's wire behaviour depends on, list it.
+const DAEMON_CODE_PATHS = [
+  'src/server/server.ts',
+  'src/server/db.ts',
+  'src/shared/wire.ts',
+  'src/shared/identity.ts',
+  'src/shared/types.ts',
+];
+
+function computeDaemonCodeHash(): string {
+  try {
+    const h = createHash('sha256');
+    for (const rel of DAEMON_CODE_PATHS) {
+      h.update(rel);
+      h.update('\0');
+      h.update(readFileSync(join(appDir(), rel)));
+    }
+    return h.digest('hex').slice(0, 12);
+  } catch {
+    return 'unknown';
+  }
+}
+
+// Computed once at import — like COMMIT, what matters is the code this process is *running*,
+// not what is on disk now.
+const CODE_HASH = computeDaemonCodeHash();
+
+export function daemonCodeHash(): string {
+  return CODE_HASH;
 }
 
 // ---- per-identity session secret (so the watcher process can auth as this userId) ----

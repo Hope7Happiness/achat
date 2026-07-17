@@ -14,7 +14,7 @@ import { fileURLToPath } from 'node:url';
 import { join, dirname, basename } from 'node:path';
 import { Db, UsernameTakenError } from './db.ts';
 import { deriveUserId } from '../shared/identity.ts';
-import { filesDir, runningCommit } from '../shared/paths.ts';
+import { filesDir, runningCommit, daemonCodeHash } from '../shared/paths.ts';
 import { WS_PROTOCOL, secretFromProtocols } from '../shared/wire.ts';
 import type { Attachment, ServerFrame } from '../shared/types.ts';
 
@@ -109,7 +109,7 @@ export function startServer(dbFile: string, host: string, port: number): Promise
   // The commit the daemon is *running*, not the one checked out — a long-lived daemon keeps
   // serving the code it started with, and every time that drifted from the repo we could not
   // see it. `achat version` compares this against the client's.
-  app.get('/health', (_req, res) => res.json({ ok: true, version: VERSION, commit: runningCommit() }));
+  app.get('/health', (_req, res) => res.json({ ok: true, version: VERSION, commit: runningCommit(), code: daemonCodeHash() }));
 
   // Web UI (served same-origin so it reuses the HTTP + WS API directly).
   app.get('/', (_req, res) => {

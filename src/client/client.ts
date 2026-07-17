@@ -225,10 +225,10 @@ export async function saveFile(session: string, fileId: string, dest?: string): 
 }
 
 // What the daemon reports about itself, including the commit it is actually running.
-export async function serverHealth(): Promise<{ ok: boolean; version: string; commit: string }> {
+export async function serverHealth(): Promise<{ ok: boolean; version: string; commit: string; code?: string }> {
   const res = await rawRequest(`${baseUrl()}/health`, { timeoutMs: 8000 });
   if (!res.ok) throw apiError(res);
-  return JSON.parse(res.text()) as { ok: boolean; version: string; commit: string };
+  return JSON.parse(res.text()) as { ok: boolean; version: string; commit: string; code?: string };
 }
 
 export async function list(): Promise<Identity[]> {

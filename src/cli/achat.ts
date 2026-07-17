@@ -28,7 +28,7 @@ import { join, dirname } from 'node:path';
 import { startServer } from '../server/server.ts';
 import * as client from '../client/client.ts';
 import { generateSecret, deriveUserId } from '../shared/identity.ts';
-import { dbPath, writeServerInfo, readCursor, writeCursor, readSessionSecret, writeSessionUser, runningCommit, appDir, baseUrl, DEFAULT_HOST, DEFAULT_PORT } from '../shared/paths.ts';
+import { dbPath, writeServerInfo, readCursor, writeCursor, readSessionSecret, writeSessionUser, runningCommit, daemonCodeHash, appDir, baseUrl, DEFAULT_HOST, DEFAULT_PORT } from '../shared/paths.ts';
 import { applyConfig } from '../shared/apply-config.ts';
 import type { Message } from '../shared/types.ts';
 
@@ -76,12 +76,28 @@ function fmt(m: Message): string {
 // restarted — and we lost time more than once to a host that was quietly stale.
 async function cmdVersion(): Promise<void> {
   const local = runningCommit();
+  const localCode = daemonCodeHash();
   process.stdout.write(`client   ${local}  (${appDir()})\n`);
   try {
     const h = await client.serverHealth();
-    const stale = h.commit !== 'unknown' && local !== 'unknown' && h.commit !== local;
-    process.stdout.write(`daemon   ${h.commit}  (${baseUrl()})${stale ? '   ← different code than this client' : ''}\n`);
-    if (stale) process.stdout.write(`\nRun \`achat update\` on the daemon's machine to bring it up to date.\n`);
+    const commitDiffers = h.commit !== 'unknown' && local !== 'unknown' && h.commit !== local;
+    if (h.code && localCode !== 'unknown') {
+      // Both sides report a daemon-code fingerprint: compare THAT, not the whole-repo commit.
+      // A docs/hook/client-only change moves the commit but not the daemon's behaviour, and
+      // warning on it just cries wolf. Only a real server/protocol difference warns.
+      if (h.code !== localCode) {
+        process.stdout.write(`daemon   ${h.commit}  (${baseUrl()})   ← the daemon's server code differs from this client\n`);
+        process.stdout.write(`\nRun \`achat update\` on the daemon's machine to bring it up to date.\n`);
+      } else if (commitDiffers) {
+        process.stdout.write(`daemon   ${h.commit}  (${baseUrl()})   (different commit, identical server code — nothing to do)\n`);
+      } else {
+        process.stdout.write(`daemon   ${h.commit}  (${baseUrl()})\n`);
+      }
+    } else {
+      // Old daemon (pre-fingerprint) — we can't compare code, so fall back to the commit.
+      process.stdout.write(`daemon   ${h.commit}  (${baseUrl()})${commitDiffers ? '   ← different code than this client' : ''}\n`);
+      if (commitDiffers) process.stdout.write(`\nRun \`achat update\` on the daemon's machine to bring it up to date.\n`);
+    }
   } catch (err) {
     process.stdout.write(`daemon   unreachable (${(err as Error).message})\n`);
   }
