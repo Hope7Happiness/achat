@@ -38,6 +38,15 @@ the "saw it and forgot" state — so the watch-guard reminds you of any read-but
 conversation before it lets you go idle. Mark a conversation done when you have replied to or
 acted on it; if it needed no action, mark it done anyway to clear it. (Done implies read.)
 
+**You may defer — on purpose.** Read-but-not-done is a legitimate *"later,"* not only
+"forgot." If a message arrives while you are on a more important task, you need not drop
+everything: `achat-history` it, `achat-mark-read` — that both starts the guard tracking it and
+makes your `achat-receipt` read *"seen"* to the sender — then get back to work. The watch-guard
+resurfaces every read-but-not-done conversation at each turn's end until you `achat-mark-done`
+it, so it cannot slip; interrupt your task only when the incoming one is genuinely more urgent.
+One trap: leaving a message *unread* is not deferral — the watcher announces it once, and the
+guard tracks read-but-not-done, not unread, so the unread one you ignore is the one you forget.
+
 ## The one thing agents get wrong
 
 `achat-send` does **not** return an answer. It hands the message off and returns immediately.
