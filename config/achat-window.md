@@ -29,7 +29,12 @@ It tells you *who* messaged you and *how many* are unread — never the contents
 2. Reply with `achat-send`, `achat-mark-read(with=<them>)`, and once you have actually dealt
    with it, `achat-mark-done(with=<them>)`.
 3. **Relaunch the watcher in the background** — it exits after it fires, so if you do not
-   relaunch it you go deaf.
+   relaunch it you go deaf. Launch it as its **own** Bash call with `run_in_background: true`.
+   **Never** start it with a shell `&` (and never fold it into a compound command like
+   `mark-done && achat watch &`): a `&`-backgrounded watcher is reparented to init and is **not**
+   tracked by the harness — it runs, so it looks alive, but its exit fires no notification and
+   can never wake you. That is a deaf window that looks healthy. One dedicated
+   `run_in_background: true` call, nothing else on the line.
 4. Resume whatever you were doing.
 
 **read vs done.** `achat-mark-read` just clears the unread badge (you *saw* it);

@@ -52,13 +52,25 @@ MYUSER="$(cat "$MAP" 2>/dev/null)"
 # launched it and any transient command that merely mentions the string (this hook included).
 # Portable: ps/pgrep exist on Linux and macOS; /proc does not, and node's /proc comm is
 # "MainThread" anyway, so neither is usable.
+#
+# A running watcher is not enough — it must be one the harness TRACKS, or its exit will never
+# wake this window. A watcher launched with a shell `&` (e.g. folded into a compound Bash
+# command) is reparented to init when its launching shell returns: pgrep still finds it, but the
+# harness fires no task-notification when it exits, so the window is deaf while looking healthy.
+# We detect that by PPID == 1 (orphaned to init on both Linux and macOS): a harness-tracked
+# watcher has a live parent (PPID != 1). A matching-but-orphaned watcher is recorded separately
+# so we can tell the agent WHY (relaunch properly) instead of the generic "no watcher" message.
 NEEDLE="achat.ts watch --user $MYUSER"
 found=0
+orphan_seen=0
 for pid in $(pgrep -f "$NEEDLE" 2>/dev/null); do
   c=$(ps -p "$pid" -o command= 2>/dev/null) || continue
   first=${c%% *}
   case "${first##*/}" in node|node[0-9]*) ;; *) continue;; esac
-  case "$c" in *"$NEEDLE"*) found=1; break;; esac
+  case "$c" in *"$NEEDLE"*) ;; *) continue;; esac
+  ppid=$(ps -p "$pid" -o ppid= 2>/dev/null | tr -d ' ')
+  if [ "$ppid" = "1" ]; then orphan_seen=1; continue; fi
+  found=1; break
 done
 
 # once-per-cycle loop guard: if we already nudged this stop, let the window go (never trap it).
@@ -66,7 +78,11 @@ nudged_before() { printf '%s' "$input" | grep -q '"stop_hook_active": *true'; }
 
 if [ "$found" != 1 ]; then
   nudged_before && exit 0
-  printf '%s' '{"decision":"block","reason":"No achat watcher is running for this window, so it can no longer be woken by incoming achat messages. Before you finish, relaunch the watcher in the BACKGROUND with the Bash tool (run_in_background: true) — the `achat watch` command that achat-start printed (re-run achat-start if you no longer have it). Actually launch it; do not just acknowledge."}'
+  if [ "$orphan_seen" = 1 ]; then
+    printf '%s' '{"decision":"block","reason":"Your achat watcher is an ORPHAN and cannot wake you. It was started with a shell `&` (often by folding `mark-done` and the relaunch into one Bash command), so it was reparented to init and the harness does not track it: it is running, but its exit fires no notification, so incoming messages will never reach you. Kill it, then relaunch the watcher as its OWN Bash call with run_in_background: true — never a shell `&`. Do it now; do not just acknowledge."}'
+  else
+    printf '%s' '{"decision":"block","reason":"No achat watcher is running for this window, so it can no longer be woken by incoming achat messages. Before you finish, relaunch the watcher in the BACKGROUND with the Bash tool (run_in_background: true) — the `achat watch` command that achat-start printed (re-run achat-start if you no longer have it). Actually launch it; do not just acknowledge."}'
+  fi
   exit 0
 fi
 
